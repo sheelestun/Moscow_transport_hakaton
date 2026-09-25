@@ -1,0 +1,14 @@
+{
+  "targetHost": "backend",
+  "targetPort": 5555,
+  "units": [
+    {
+      "unitId": 664030,
+      "intervalMs": 2000,
+      "autoGenerate": true,
+      "cells": [
+        {"type": "G6CellNav00", "fields": {"lat": 55.75, "lon": 37.61, "speed": 15}}
+      ]
+    }
+  ]
+}
