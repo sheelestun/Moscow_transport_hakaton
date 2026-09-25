@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostRegressor, Pool
+from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -152,6 +152,85 @@ def mae_target_estimate(data: dict) -> float:
     return mz - (mz - mb) / 0.40
 
 
+# ----------------------------------------------------------------------------- неопределённость
+
+CLASSES = ["early", "ontime", "late"]      # пороги как в разметке: < −60 с / > +120 с
+QUANTILES = (0.1, 0.5, 0.9)
+
+
+def delay_class(y) -> np.ndarray:
+    y = np.asarray(y, float)
+    return np.where(y < -60, "early", np.where(y > 120, "late", "ontime"))
+
+
+def fit_uncertainty(X: pd.DataFrame, M: pd.DataFrame, feats: list[str], params: dict, seed: int = 0):
+    """Квантильная модель (интервал 10–90%) на поправку к cur_dev_s + классификатор early/ontime/late."""
+    cats = [c for c in CAT_FEATURES if c in feats]
+    base = {k: v for k, v in params.items() if k != "loss_function"}
+    alphas = ",".join(str(a) for a in QUANTILES)
+    q = CatBoostRegressor(**base, loss_function=f"MultiQuantile:alpha={alphas}", random_seed=seed)
+    q.fit(Pool(X[feats], (M["y"] - M["cur_dev_s"]).to_numpy(), cat_features=cats))
+    clf = CatBoostClassifier(**base, loss_function="MultiClass", class_names=CLASSES, random_seed=seed)
+    clf.fit(Pool(X[feats], delay_class(M["y"]), cat_features=cats))
+    return q, clf
+
+
+def predict_uncertainty(q: CatBoostRegressor, clf: CatBoostClassifier, X: pd.DataFrame, feats: list[str],
+                        cur_dev: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """-> (квантили задержки N×3 в секундах, вероятности классов N×3 в порядке CLASSES)."""
+    cats = [c for c in CAT_FEATURES if c in feats]
+    pool = Pool(X[feats], cat_features=cats)
+    qs = np.sort(q.predict(pool), axis=1) + cur_dev[:, None]
+    proba = clf.predict_proba(pool)
+    order = [list(clf.classes_).index(c) for c in CLASSES]
+    return qs, proba[:, order]
+
+
+COVERAGE = 0.8  # цель: факт попадает в интервал в 80% случаев
+
+
+def conformal_margin(qs: np.ndarray, y: np.ndarray, coverage: float = COVERAGE) -> float:
+    """На сколько секунд расширить интервал [q10, q90], чтобы накрыть ``coverage`` фактов (CQR)."""
+    s = np.maximum(qs[:, 0] - y, y - qs[:, 2])
+    n = len(s)
+    return float(np.quantile(s, min(1.0, np.ceil((n + 1) * coverage) / n)))
+
+
+def eval_uncertainty(data: dict, feats: list[str], params: dict) -> dict:
+    """Holdout train -> test: покрытие интервала (сырое и после конформной калибровки), качество вероятностей.
+
+    Калибровочный запас считается на test; честное покрытие проверяется перекрёстно на двух половинах test.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    (Xtr, Mtr), (Xte, Mte) = data["train"], data["test"]
+    q, clf = fit_uncertainty(Xtr, Mtr, feats, params)
+    qs, proba = predict_uncertainty(q, clf, Xte, feats, Mte["cur_dev_s"].to_numpy())
+    y = Mte["y"].to_numpy()
+    half = np.random.RandomState(0).rand(len(y)) < 0.5
+    cov_cross = []
+    for a, b in ((half, ~half), (~half, half)):
+        e = conformal_margin(qs[a], y[a])
+        cov_cross.append(np.mean((y[b] >= qs[b, 0] - e) & (y[b] <= qs[b, 2] + e)))
+    margin = conformal_margin(qs, y)
+    cls = delay_class(y)
+    p_late = proba[:, 2]
+    bins = pd.cut(p_late, [0, 0.25, 0.5, 0.75, 1.0], include_lowest=True)
+    calib = pd.DataFrame({"p": p_late, "late": cls == "late"}).groupby(bins, observed=True).agg(
+        n=("late", "size"), p_mean=("p", "mean"), late_share=("late", "mean")).round(2)
+    return {
+        "coverage_10_90": float(np.mean((y >= qs[:, 0]) & (y <= qs[:, 2]))),
+        "interval_width_median": float(np.median(qs[:, 2] - qs[:, 0])),
+        "conformal_margin_s": margin,
+        "coverage_calibrated": float(np.mean(cov_cross)),
+        "interval_width_calibrated": float(np.median(qs[:, 2] - qs[:, 0]) + 2 * margin),
+        "auc_late": float(roc_auc_score(cls == "late", p_late)),
+        "auc_early": float(roc_auc_score(cls == "early", proba[:, 0])),
+        "class_accuracy": float(np.mean(np.array(CLASSES)[proba.argmax(1)] == cls)),
+        "calibration_late": calib,
+    }
+
+
 # ----------------------------------------------------------------------------- финал
 
 
@@ -175,6 +254,8 @@ def main() -> None:
     ap.add_argument("--dataset", type=Path, default=Path("./dataset"))
     ap.add_argument("--eval", action="store_true", help="оценить по трём схемам")
     ap.add_argument("--fit", action="store_true", help="обучить на train+test и записать сабмит")
+    ap.add_argument("--eval-uncertainty", action="store_true", help="проверить интервал и вероятности (holdout)")
+    ap.add_argument("--fit-uncertainty", action="store_true", help="обучить только интервал+классификатор")
     ap.add_argument("--out", type=Path, default=Path("submission.csv"))
     ap.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "catboost.json")
     ap.add_argument("--no-cache", action="store_true")
@@ -196,6 +277,35 @@ def main() -> None:
         print(f"holdout train->test: MAE {ho['test_mae']:.2f} (бейзлайн {ho['test_base']:.2f})  score≈{score(data['test'][1]['y'], ho['pred'], mt):.3f}")
         print(f"proxy K-fold (как validate): MAE {px['proxy_mae']:.2f} (бейзлайн {px['proxy_base']:.2f})")
         print(f"LOVO (честная): MAE {lv['lovo_mae']:.2f} (бейзлайн {lv['lovo_base']:.2f})")
+        ART.mkdir(parents=True, exist_ok=True)
+        (ART / "catboost_metrics.json").write_text(json.dumps({
+            "holdout_mae": ho["test_mae"], "holdout_baseline_mae": ho["test_base"],
+            "proxy_mae": px["proxy_mae"], "proxy_baseline_mae": px["proxy_base"],
+            "lovo_mae": lv["lovo_mae"], "lovo_baseline_mae": lv["lovo_base"], "mae_target_estimate": mt,
+        }, indent=2))
+
+    if args.eval_uncertainty or args.fit or args.fit_uncertainty:
+        u = eval_uncertainty(data, feats, params)
+        print(f"интервал 10–90% без калибровки: факт попал в {u['coverage_10_90']:.0%} (цель {COVERAGE:.0%}), "
+              f"ширина {u['interval_width_median']:.0f} с")
+        print(f"после конформной калибровки (+{u['conformal_margin_s']:.0f} с с каждой стороны): "
+              f"покрытие {u['coverage_calibrated']:.0%}, ширина {u['interval_width_calibrated']:.0f} с")
+        print(f"вероятности: AUC late {u['auc_late']:.3f}, AUC early {u['auc_early']:.3f}, "
+              f"точность класса {u['class_accuracy']:.1%}")
+        print("калибровка p_late (прогнозируемая вероятность vs реальная доля опозданий):")
+        print(u["calibration_late"].to_string())
+
+    if args.fit or args.fit_uncertainty:
+        X, M = pooled(data)
+        q, clf = fit_uncertainty(X, M, feats, params)
+        ART.mkdir(parents=True, exist_ok=True)
+        q.save_model(str(ART / "catboost_quantiles.cbm"))
+        clf.save_model(str(ART / "catboost_classes.cbm"))
+        (ART / "catboost_uncertainty.json").write_text(json.dumps({
+            "conformal_margin_s": u["conformal_margin_s"], "coverage_target": COVERAGE,
+            "coverage_calibrated_holdout": u["coverage_calibrated"], "auc_late_holdout": u["auc_late"],
+            "auc_early_holdout": u["auc_early"], "class_accuracy_holdout": u["class_accuracy"]}, indent=2))
+        print("[uncertainty] сохранены catboost_quantiles.cbm, catboost_classes.cbm, catboost_uncertainty.json")
 
     if args.fit:
         models = fit_final(data, feats, params, w_syn, seeds)
@@ -207,7 +317,9 @@ def main() -> None:
             m.save_model(str(ART / f"catboost_seed{i}.cbm"))
         (ART / "catboost_meta.json").write_text(json.dumps(
             {"features": feats, "cat_features": [c for c in CAT_FEATURES if c in feats], "params": params,
-             "w_syn": w_syn, "n_models": len(models), "target": "target_delay_s - cur_dev_s"}, ensure_ascii=False, indent=2))
+             "w_syn": w_syn, "n_models": len(models), "target": "target_delay_s - cur_dev_s",
+             "classes": CLASSES, "quantiles": list(QUANTILES),
+             "model_version": f"cb-tab-{time.strftime('%Y%m%d-%H%M')}"}, ensure_ascii=False, indent=2))
         print(f"[submission] {args.out}: {len(sub)} строк; прогноз {sub['prediction'].describe().round(1).to_dict()}")
 
 

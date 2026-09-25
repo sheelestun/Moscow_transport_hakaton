@@ -100,6 +100,13 @@ def to_sec(values) -> np.ndarray:
     return np.asarray(values).astype("datetime64[s]").astype(np.int64)
 
 
+def tele_sec(values) -> np.ndarray:
+    """Время пакета в целых секундах с округлением **вверх**: пакет 03:35:00.5 позже T = 03:35:00 и в прогноз
+    на этот момент не попадает (строгое ``event_time <= T``)."""
+    us = np.asarray(values).astype("datetime64[us]").astype(np.int64)
+    return -((-us) // 1_000_000)
+
+
 def dist_m(lon1, lat1, lon2, lat2):
     k = np.pi / 180
     return 6371000.0 * np.hypot((np.asarray(lon1) - lon2) * k * np.cos(lat2 * k), (np.asarray(lat1) - lat2) * k)
@@ -130,9 +137,24 @@ class Stops:
     cum_dist: np.ndarray    # накопленное расстояние по прямой между остановками (м)
 
 
+def make_tele(ts, lon, lat, speed, valid=None) -> Tele:
+    """Телеметрия одного ТС из массивов (онлайн-путь). Те же правила очистки, что в ``clean_traffic``."""
+    ts = np.asarray(ts, dtype=float)  # секунды с дробной частью; дубли — только точно совпадающие метки
+    lon, lat = np.asarray(lon, float).copy(), np.asarray(lat, float).copy()
+    speed = np.asarray(speed, float).copy()
+    valid = np.ones(len(ts), bool) if valid is None else np.asarray(valid, bool)
+    bad = ~valid | np.isnan(lat) | (np.abs(lat) < 1) | (np.abs(lon) < 1)
+    lon[bad], lat[bad] = np.nan, np.nan
+    speed[speed > 120] = np.nan
+    order = np.argsort(ts, kind="stable")
+    ts, lon, lat, speed = ts[order], lon[order], lat[order], speed[order]
+    keep = np.r_[True, np.diff(ts) != 0]
+    return Tele(np.ceil(ts[keep]).astype(np.int64), lon[keep], lat[keep], speed[keep])
+
+
 def index_traffic(traffic: pd.DataFrame) -> dict[int, Tele]:
     t = clean_traffic(traffic)
-    return {int(k): Tele(to_sec(g["event_time"]), g["lon"].to_numpy(float), g["lat"].to_numpy(float),
+    return {int(k): Tele(tele_sec(g["event_time"]), g["lon"].to_numpy(float), g["lat"].to_numpy(float),
                          g["speed"].to_numpy(float)) for k, g in t.groupby("tr_id")}
 
 
