@@ -66,6 +66,32 @@ python src/eval.py \
 - `src/features/` — общий модуль фичей: **один и тот же код** работает и в батче (для сабмита), и онлайн (для инференс-сервиса). Договориться о схеме.
 - `src/inference_service.py` — FastAPI с `POST /predict` и `POST /predict/batch` по контракту из `ARCHITECTURE_AND_ROLES.md` §7.1.
 
+## CatBoost-трек (табличный)
+
+```bash
+python ml/src/train_catboost.py --dataset ./dataset --eval                      # три схемы валидации
+python ml/src/train_catboost.py --dataset ./dataset --fit --out submission.csv  # финал: train+test -> validate
+python ml/src/predict_submission.py --dataset ./dataset --out submission.csv --catboost   # то же из сохранённых моделей
+```
+
+Признаки — `src/features/tabular.py`, функция `point_features(T, ...)` считает одну точку и годится для онлайна.
+Только телеметрия `event_time <= T`, **плановое** расписание и `cur_dev_s`; `time_fact_begin` не читается вообще.
+
+| Группа | Что даёт |
+|---|---|
+| рейсы по плану (`n_trip_breaks`, `tgt_left_in_trip`, `cur_idx_in_trip`, ...) | разрыв плана > 5 мин = конечная; через неё корреляция задержки падает с 0.96 до 0.02 |
+| GPS-история (`gps_*`, `overdue_*`) | фактические прибытия восстановлены из GPS (медианная ошибка ~3 с) |
+| движение и ETA (`spd*`, `stop*`, `route_left_m`, `eta_dev_*`) | простой, скорость, «физический» прогноз прибытия |
+| `manual_fill` | у таких остановок факт ≈ план, таргет ≈ 0 |
+| `route`, `hour` | маршрут (клоны -> свой прототип) и время суток |
+
+Схемы валидации (`--eval`): **proxy** — K-fold блоками по 30 мин по реальным точкам train+test, клоны остаются в
+обучении (так устроен validate); **holdout** train -> test; **LOVO** — честная, ТС вместе с клонами отложено.
+Решения по признакам принимаем по proxy+holdout, LOVO показываем жюри как качество на новом ТС.
+
+Данные — один день, 13 реальных ТС; в train 26 синтетических клонов (по 2 на ТС, те же моменты T).
+В `train/schedule.csv` лежат факты по целевым остановкам validate — это утечка из будущего, не используем.
+
 ## Правила по сабмитам
 
 - Лимит 36 попыток / 24 успешных в день, до 27 сент 23:59 МСК.
