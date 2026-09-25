@@ -1,103 +1,103 @@
 {
   "request (телеметрия урезана до 5 пакетов)": {
-    "sample_id": "132430_1767713700",
-    "tr_id": 132430,
-    "T": "2026-01-06T15:35:00",
-    "target_stop_id": 53698549642,
-    "target_time_begin": "2026-01-06T15:46:00",
-    "cur_dev_s": 318.0,
+    "sample_id": "134040_1767733800",
+    "tr_id": 134040,
+    "T": "2026-01-06T21:10:00",
+    "target_stop_id": 53721480955,
+    "target_time_begin": "2026-01-06T21:21:00",
+    "cur_dev_s": 355.0,
     "telemetry": [
       {
-        "tr_id": 132430,
-        "event_time": "2026-01-06T14:25:08.775031",
-        "lat": null,
-        "lon": null,
-        "speed": null,
-        "location_valid": "false",
-        "is_hist_data": 0
-      },
-      {
-        "tr_id": 132430,
-        "event_time": "2026-01-06T14:25:08.695468",
-        "lat": null,
-        "lon": null,
-        "speed": null,
-        "location_valid": "false",
-        "is_hist_data": 0
-      },
-      {
-        "tr_id": 132430,
-        "event_time": "2026-01-06T14:25:00",
-        "lat": 55.566593,
-        "lon": 37.454594,
-        "speed": 33.0,
+        "tr_id": 134040,
+        "event_time": "2026-01-06T20:03:10",
+        "lat": 55.634254,
+        "lon": 37.33806,
+        "speed": 0.0,
         "location_valid": "true",
         "is_hist_data": 0
       },
       {
-        "tr_id": 132430,
-        "event_time": "2026-01-06T14:24:58",
-        "lat": 55.566452,
-        "lon": 37.45441,
-        "speed": 32.0,
+        "tr_id": 134040,
+        "event_time": "2026-01-06T20:02:54",
+        "lat": 55.634254,
+        "lon": 37.33806,
+        "speed": 0.0,
         "location_valid": "true",
         "is_hist_data": 0
       },
       {
-        "tr_id": 132430,
-        "event_time": "2026-01-06T14:24:54",
-        "lat": 55.566177,
-        "lon": 37.454037,
-        "speed": 28.0,
+        "tr_id": 134040,
+        "event_time": "2026-01-06T20:02:40",
+        "lat": 55.634254,
+        "lon": 37.33806,
+        "speed": 0.0,
+        "location_valid": "true",
+        "is_hist_data": 0
+      },
+      {
+        "tr_id": 134040,
+        "event_time": "2026-01-06T20:02:24",
+        "lat": 55.634254,
+        "lon": 37.33806,
+        "speed": 0.0,
+        "location_valid": "true",
+        "is_hist_data": 0
+      },
+      {
+        "tr_id": 134040,
+        "event_time": "2026-01-06T20:02:10",
+        "lat": 55.634254,
+        "lon": 37.33806,
+        "speed": 0.0,
         "location_valid": "true",
         "is_hist_data": 0
       }
     ]
   },
   "response": {
-    "sample_id": "132430_1767713700",
-    "delay_pred_sec": 296.5,
+    "sample_id": "134040_1767733800",
+    "delay_pred_sec": 406.3,
     "risk_score": 0.99,
-    "confidence": 0.755,
+    "confidence": 0.83,
     "top_features": [
       {
         "name": "cur_dev_s",
-        "value": 318.0,
-        "contribution": 0.788,
-        "contribution_sec": 260.7
-      },
-      {
-        "name": "plan_speed_kmh",
-        "value": 11.182973208286196,
-        "contribution": 0.068,
-        "contribution_sec": -22.5
+        "value": 355.0,
+        "contribution": 0.819,
+        "contribution_sec": 330.3
       },
       {
         "name": "n_stops_between",
-        "value": 7.0,
-        "contribution": 0.06,
-        "contribution_sec": 19.9
+        "value": 10.0,
+        "contribution": 0.098,
+        "contribution_sec": 39.7
       },
       {
         "name": "n_pkt15",
-        "value": 191.0,
-        "contribution": 0.054,
-        "contribution_sec": 17.7
+        "value": 173.0,
+        "contribution": 0.038,
+        "contribution_sec": 15.2
       },
       {
-        "name": "gps_med5",
-        "value": 238.0,
-        "contribution": 0.03,
-        "contribution_sec": -10.0
+        "name": "tgt_left_in_trip",
+        "value": 27.0,
+        "contribution": 0.023,
+        "contribution_sec": -9.4
+      },
+      {
+        "name": "disp15_m",
+        "value": 5223.062651100684,
+        "contribution": 0.022,
+        "contribution_sec": 8.8
       }
     ],
     "reason_pattern": "accumulated_delay",
     "recommendation": "release_reserve",
-    "model_version": "catboost-ensemble-v1",
+    "model_version": "cb-tab-20260926-0100",
     "lead_min": 11.0,
     "delay_interval_sec": [
-      221.2,
-      368.2
+      357.8,
+      459.8
     ],
     "p_early": 0.0,
     "p_ontime": 0.01,
@@ -106,17 +106,22 @@
     "causes": [
       {
         "code": "accumulated",
-        "text": "накопленное отклонение: +318 с на последней пройденной остановке",
-        "contribution_sec": 247.9
+        "text": "накопленное отклонение: +355 с на последней пройденной остановке",
+        "contribution_sec": 318.0
       },
       {
         "code": "context",
-        "text": "типичная картина для маршрута в 15:00",
-        "contribution_sec": 43.9
+        "text": "типичная картина для маршрута в 21:00",
+        "contribution_sec": 82.7
+      },
+      {
+        "code": "slow",
+        "text": "медленное движение: в среднем 21 км/ч за 15 мин",
+        "contribution_sec": 13.6
       }
     ],
-    "recommendation_text": "риск нарушения интервала: рассмотреть выпуск резервного ТС",
+    "recommendation_text": "затруднённое движение на участке: рассмотреть корректировку интервалов или объезд",
     "data_status": "live",
-    "latency_ms": 52.81
+    "latency_ms": 46.6
   }
 }
