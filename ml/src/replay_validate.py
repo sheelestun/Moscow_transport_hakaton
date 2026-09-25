@@ -27,23 +27,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def build_requests(dataset: Path, history_min: int = 90) -> list[dict]:
+    """Запросы в формате контракта сервиса: пакеты телеметрии ТС за ``history_min`` минут до T (0 — все до T).
+
+    Плановое расписание не передаём — сервис берёт план ТС из SCHEDULE_PATH (как backend со своим справочником).
+    """
     pts = pd.read_csv(dataset / "validate" / "points.csv", parse_dates=["T", "target_time_begin"])
     tr = pd.read_csv(dataset / "validate" / "traffic.csv", parse_dates=["event_time"], low_memory=False)
-    tr = tr.sort_values(["tr_id", "event_time", "is_hist_data"])
     by_tr = {k: g for k, g in tr.groupby("tr_id")}
     reqs = []
     for r in pts.itertuples(index=False):
         g = by_tr.get(r.tr_id)
         tele = []
         if g is not None:
-            w = g[(g.event_time <= r.T) & (g.event_time > r.T - pd.Timedelta(minutes=history_min))]
+            w = g[g.event_time <= r.T]
+            if history_min:
+                w = w[w.event_time > r.T - pd.Timedelta(minutes=history_min)]
             for p in w.itertuples(index=False):
-                tele.append({"ts": p.event_time.isoformat(),
+                tele.append({"tr_id": int(p.tr_id), "event_time": p.event_time.isoformat(),
                              "lat": None if pd.isna(p.lat) else float(p.lat),
                              "lon": None if pd.isna(p.lon) else float(p.lon),
                              "speed": None if pd.isna(p.speed) else float(p.speed),
-                             "location_valid": str(p.location_valid).lower() == "true"})
-        reqs.append({"sample_id": r.sample_id, "vehicle_id": int(r.tr_id), "T": r.T.isoformat(),
+                             "location_valid": str(p.location_valid).lower(), "is_hist_data": int(bool(p.is_hist_data))})
+        reqs.append({"sample_id": r.sample_id, "tr_id": int(r.tr_id), "T": r.T.isoformat(),
                      "target_stop_id": int(r.target_stop_id), "target_time_begin": r.target_time_begin.isoformat(),
                      "cur_dev_s": float(r.cur_dev_s), "telemetry": tele})
     return reqs
@@ -87,7 +92,7 @@ def main() -> None:
         single.append(client.post("/predict", json=q).json())
         t_single.append((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
-    batch = client.post("/predict/batch", json=reqs).json()
+    batch = client.post("/predict/batch", json={"requests": reqs}).json()["responses"]
     t_batch = (time.perf_counter() - t0) * 1000
 
     on = pd.DataFrame([{"sample_id": r["sample_id"], "online": r["delay_pred_sec"], "status": r["data_status"],
@@ -103,7 +108,7 @@ def main() -> None:
           f"p95 {np.percentile(t_single, 95):.0f} мс")
     print(f"latency /predict/batch ({len(reqs)} точек): {t_batch:.0f} мс всего, {t_batch / len(reqs):.1f} мс на точку")
     print("статусы данных:", m.status.value_counts().to_dict(), "| светофор:", m.level.value_counts().to_dict())
-    print("метрики сервиса:", client.get("/metrics").json())
+    print("метрики сервиса:", {k: v for k, v in client.get("/metrics/model").json().items() if k in ("latency_ms_p50", "latency_ms_p95", "requests_served", "score_estimate")})
     if args.save_example:
         i = int(np.argmax([r["p_late"] for r in single]))
         ex_req = dict(reqs[i])

@@ -85,17 +85,42 @@ def explain(shap_row: np.ndarray, feats: list[str], f: dict, delay_pred: float, 
             "top_features": [{"name": n, "contribution": round(float(c), 1)} for n, c in top]}
 
 
+# Коды причин и рекомендаций — те, что понимает дашборд (frontend/js/labels.js). Новые коды:
+# terminal_turnaround (разворот на конечной), ahead_of_schedule (опережение), on_track (по графику).
+REASON_CODE = {"accumulated": "accumulated_delay", "dwell": "long_dwell", "slow": "speed_drop", "trend": "speed_drop",
+               "distance": "traffic_jam_ahead", "overdue": "traffic_jam_ahead", "terminal": "terminal_turnaround",
+               "manual": "on_track", "context": "accumulated_delay"}
+REC_CODE = {"traffic_jam_ahead": "detour", "long_dwell": "adjust_interval", "speed_drop": "signal_priority",
+            "accumulated_delay": "release_reserve", "terminal_turnaround": "release_reserve",
+            "ahead_of_schedule": "hold_at_stop", "on_track": "monitor"}
+RISK_RED, RISK_YELLOW = 0.7, 0.35  # как в frontend/js/config.js
+
+
 def risk_level(delay_pred: float, p_early: float, p_late: float) -> str:
-    """Светофор. Пороги как у классов разметки: опоздание > +120 с, опережение < −60 с."""
-    if p_late >= 0.5 or delay_pred >= 120:
+    """Светофор по вероятности опоздания > +120 с (пороги дашборда); сильное опережение — жёлтый."""
+    if p_late >= RISK_RED:
         return "red"
-    if p_late >= 0.25 or p_early >= 0.5 or delay_pred >= 60 or delay_pred <= -60:
+    if p_late >= RISK_YELLOW or p_early >= 0.5 or delay_pred <= -60:
         return "yellow"
     return "green"
 
 
+def reason_pattern(level: str, delay_pred: float, causes: list[dict], f: dict) -> str:
+    """Код главной причины для дашборда (из SHAP-групп, а не из порогов по отдельным признакам)."""
+    if level == "green":
+        return "on_track"
+    if delay_pred <= -60:
+        return "ahead_of_schedule"
+    if not causes:
+        return "accumulated_delay"
+    code = REASON_CODE.get(causes[0]["code"], "accumulated_delay")
+    if code == "speed_drop" and _v(f, "spd15", 99) < 5 and _v(f, "route_left_m", 0) > 500:
+        return "traffic_jam_ahead"
+    return code
+
+
 def recommendation(level: str, delay_pred: float, causes: list[dict]) -> str:
-    """Правила поверх прогноза: что диспетчеру стоит сделать."""
+    """Правила поверх прогноза: что диспетчеру стоит сделать (текст для карточки)."""
     codes = {c["code"] for c in causes}
     if level == "green":
         return "действий не требуется"

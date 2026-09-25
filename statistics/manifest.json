@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "input_files": [
+    {
+      "path": "train/traffic.csv",
+      "sha256": "1890b36e19765c970b3db3c15fc372e2c6dfcc2b20380679637be9115fe303cd",
+      "bytes": 49170493,
+      "rows": 287849,
+      "columns": [
+        "packet_id",
+        "tr_id",
+        "unit_id",
+        "event_time",
+        "device_event_id",
+        "location_valid",
+        "gps_time",
+        "lon",
+        "lat",
+        "alt",
+        "speed",
+        "heading",
+        "receive_time",
+        "is_hist_data"
+      ]
+    },
+    {
+      "path": "train/schedule.csv",
+      "sha256": "f7c109efd50d358d202b6c1fc5a7cb5be14ccc489c7adb5f3fd897e326512115",
+      "bytes": 2690246,
+      "rows": 16674,
+      "columns": [
+        "tt_action_item_id",
+        "time_begin",
+        "time_fact_begin",
+        "order_date",
+        "manual_fill",
+        "tr_id",
+        "geom",
+        "building_address"
+      ]
+    },
+    {
+      "path": "labels/labels_train.csv",
+      "sha256": "b3058d52683091e77d190d6a99b717ad5c44ae02de37cadf47123dd3c534361d",
+      "bytes": 463478,
+      "rows": 4434,
+      "columns": [
+        "sample_id",
+        "tr_id",
+        "T",
+        "target_stop_id",
+        "target_time_begin",
+        "cur_dev_s",
+        "target_delay_s",
+        "target_class"
+      ]
+    },
+    {
+      "path": "test/traffic.csv",
+      "sha256": "3c74bb9d3cc5e076a2e7f89de7e78fb103c350757d16c9d629de651ee09bf517",
+      "bytes": 17117773,
+      "rows": 105945,
+      "columns": [
+        "packet_id",
+        "tr_id",
+        "unit_id",
+        "event_time",
+        "device_event_id",
+        "location_valid",
+        "gps_time",
+        "lon",
+        "lat",
+        "alt",
+        "speed",
+        "heading",
+        "receive_time",
+        "is_hist_data"
+      ]
+    },
+    {
+      "path": "test/schedule.csv",
+      "sha256": "a31023b3ec29942145e31ef0eb93bc5ef4adf49b2d9da5b397f02e03e4665bd3",
+      "bytes": 794336,
+      "rows": 5558,
+      "columns": [
+        "tt_action_item_id",
+        "time_begin",
+        "time_fact_begin",
+        "order_date",
+        "manual_fill",
+        "tr_id",
+        "geom",
+        "building_address"
+      ]
+    },
+    {
+      "path": "labels/labels_test.csv",
+      "sha256": "7c7b0206d7ee6ee66af6baafba311755d5e033cd291410972eb89a231079df95",
+      "bytes": 33775,
+      "rows": 353,
+      "columns": [
+        "sample_id",
+        "tr_id",
+        "T",
+        "target_stop_id",
+        "target_time_begin",
+        "cur_dev_s",
+        "target_delay_s",
+        "target_class"
+      ]
+    },
+    {
+      "path": "validate/traffic.csv",
+      "sha256": "3c74bb9d3cc5e076a2e7f89de7e78fb103c350757d16c9d629de651ee09bf517",
+      "bytes": 17117773,
+      "rows": 105945,
+      "columns": [
+        "packet_id",
+        "tr_id",
+        "unit_id",
+        "event_time",
+        "device_event_id",
+        "location_valid",
+        "gps_time",
+        "lon",
+        "lat",
+        "alt",
+        "speed",
+        "heading",
+        "receive_time",
+        "is_hist_data"
+      ]
+    },
+    {
+      "path": "validate/schedule_plan.csv",
+      "sha256": "c9b561743a5cb83616941b02b47c5aded89e75218d93c13a282a2e8c790787c8",
+      "bytes": 683160,
+      "rows": 5558,
+      "columns": [
+        "tt_action_item_id",
+        "time_begin",
+        "order_date",
+        "manual_fill",
+        "tr_id",
+        "geom",
+        "building_address"
+      ]
+    },
+    {
+      "path": "validate/points.csv",
+      "sha256": "284d35f25cf7b13ed3f1ef0556c41910c6e6abfe5c523d2c2d1d36f3d67c64a6",
+      "bytes": 12645,
+      "rows": 151,
+      "columns": [
+        "sample_id",
+        "tr_id",
+        "T",
+        "target_stop_id",
+        "target_time_begin",
+        "cur_dev_s"
+      ]
+    },
+    {
+      "path": "sample_submission.csv",
+      "sha256": "e288c1e332bc3ce157f630b155601f8d43d02bcc3bd7e991ade59448b5cbacf3",
+      "bytes": 3696,
+      "rows": 151,
+      "columns": [
+        "sample_id",
+        "prediction"
+      ]
+    }
+  ],
+  "python": "3.13.0rc2",
+  "libraries": {
+    "pandas": "2.3.3",
+    "numpy": "2.2.6",
+    "matplotlib": "3.10.6",
+    "scipy": "1.16.2"
+  },
+  "assumptions": {
+    "timezone": "naive source timestamps; no timezone conversion",
+    "synthetic_cohort": "non-numeric packet_id heuristic, propagated via tr_id",
+    "speed_flag_kmh": 120,
+    "coverage_window": "(T-900s,T] using event_time and valid coordinates",
+    "validate_truth": "not loaded or reconstructed",
+    "output_scope": "aggregates only; plotted rain points are sampled distribution values, no identifiers"
+  },
+  "figures": [
+    {
+      "file": "01_target_raincloud.png",
+      "title": "Распределение целевой задержки",
+      "caption": "Источник: labels_train.csv и labels_test.csv. Плотность и квартильный интервал рассчитаны по всем значениям; точки — фиксированная случайная выборка до 1000 на группу. Белый маркер — медиана, полоса — Q1–Q3. *Синтетическая когорта определена эвристикой нечислового packet_id; validate targets не используются."
+    },
+    {
+      "file": "02_baseline_raincloud.png",
+      "title": "Распределение ошибок baseline",
+      "caption": "Источник: labels_train.csv и labels_test.csv. Плотность и квартильный интервал рассчитаны по всем значениям; точки — фиксированная случайная выборка до 1000 на группу. Белый маркер — медиана, полоса — Q1–Q3. *Синтетическая когорта определена эвристикой нечислового packet_id; validate targets не используются. Ошибки вычислены отдельно для каждой точки; это описательная оценка, а не независимый эксперимент."
+    },
+    {
+      "file": "03_quality_upset_train.png",
+      "title": "Точные пересечения флагов качества · train",
+      "caption": "Источник: train/traffic.csv. Все наблюдаемые комбинации включены, без отсечения редких; каждая строка входит ровно в один столбец. NULL в навигации — пропуск хотя бы одного из gps_time/lon/lat/alt/speed/heading. Порог скорости 120 км/ч — диагностическая эвристика, а не физический предел. Столбец без флагов не означает доказанную корректность данных. Test и validate идентичны по телеметрии."
+    },
+    {
+      "file": "04_quality_upset_test.png",
+      "title": "Точные пересечения флагов качества · test",
+      "caption": "Источник: test/traffic.csv. Все наблюдаемые комбинации включены, без отсечения редких; каждая строка входит ровно в один столбец. NULL в навигации — пропуск хотя бы одного из gps_time/lon/lat/alt/speed/heading. Порог скорости 120 км/ч — диагностическая эвристика, а не физический предел. Столбец без флагов не означает доказанную корректность данных. Test и validate идентичны по телеметрии."
+    },
+    {
+      "file": "05_missing_heatmap.png",
+      "title": "NULL по колонкам и выборкам",
+      "caption": "Источник: train/test/validate traffic.csv. Доля pandas.isna() от всех строк соответствующего split; служебная добавленная колонка cohort исключена. Невалидный GPS при заполненных координатах не считается NULL."
+    },
+    {
+      "file": "06_gps_age_ecdf.png",
+      "title": "Свежесть GPS на момент прогноза",
+      "caption": "Источник: points/labels и traffic каждого split; только валидный GPS с event_time ≤ T. ECDF условная: точки без прошлого валидного GPS исключены из знаменателя и отдельно посчитаны в легенде. Receive_time здесь не ограничивает доступность. Ось преобразована log(1+x), подписи в секундах."
+    },
+    {
+      "file": "07_hourly_volume.png",
+      "title": "Почасовой объём телеметрии",
+      "caption": "Источник: traffic.csv каждого split; часы округлены вниз по event_time, без изменения временной зоны. Split нельзя суммировать как независимые наблюдения: test/validate traffic идентичны, их packet_id входят в train. Синтетические временные метки train выходят за границы суток."
+    },
+    {
+      "file": "08_clock_ecdf.png",
+      "title": "Согласованность временных меток",
+      "caption": "Источник: train/traffic.csv. ECDF использует все ненулевые разности, без отсечения выбросов. Отрицательная разность означает, что левая временная метка раньше правой. *Эвристика синтетики — нечисловой packet_id. Расхождения требуют отдельного контракта обработки времени."
+    }
+  ]
+}
