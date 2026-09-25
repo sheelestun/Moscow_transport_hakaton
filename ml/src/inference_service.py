@@ -87,6 +87,8 @@ class PredictResponse(BaseModel):
     risk_score: float
     confidence: float
     top_features: list[TopFeature]
+    reason_pattern: str
+    recommendation: str
     model_version: str
 
 
@@ -153,6 +155,48 @@ def _confidence(residuals: np.ndarray, scale_sec: float = 60.0) -> float:
     return float(max(0.0, min(1.0, 1.0 - residuals.std(ddof=0) / scale_sec)))
 
 
+# Соответствие reason → recommendation зафиксировано в фронте (frontend/js/mock.js REC_FOR_REASON).
+REASON_TO_RECOMMENDATION = {
+    "traffic_jam_ahead": "detour",
+    "long_dwell": "adjust_interval",
+    "speed_drop": "signal_priority",
+    "accumulated_delay": "release_reserve",
+    "on_track": "monitor",
+}
+
+
+def _reason_pattern(delay_pred: float, x: pd.Series) -> str:
+    """Rule-based метка причины задержки поверх фичей `tabular.py`.
+
+    Правила порядковые: первая сработавшая — победила. Порядок:
+      1. delay < 30 сек                              → on_track
+      2. manual_fill (конечная) или cur_dev_s > 120  → accumulated_delay
+      3. spd15 < 5 м/с и route_left_m > 500          → traffic_jam_ahead
+      4. stop_p95 > 30 сек (долгие простои)          → long_dwell
+      5. spd15 < 10 м/с                              → speed_drop
+      6. fallback                                    → accumulated_delay
+
+    bunching (сбой интервала) в правилах нет — у нас в фичах нет headway
+    к соседним ТС, так что честнее его не выдавать.
+    """
+    def g(name: str, default: float = 0.0) -> float:
+        v = x.get(name)
+        return default if v is None or pd.isna(v) else float(v)
+
+    if delay_pred < 30:
+        return "on_track"
+    if g("manual_fill") >= 0.5 or g("cur_dev_s") > 120:
+        return "accumulated_delay"
+    spd15, route_left = g("spd15"), g("route_left_m")
+    if spd15 < 5 and route_left > 500:
+        return "traffic_jam_ahead"
+    if g("stop_p95") > 30:
+        return "long_dwell"
+    if spd15 < 10:
+        return "speed_drop"
+    return "accumulated_delay"
+
+
 def _predict_one(req: PredictRequest) -> PredictResponse:
     sample = {
         "sample_id": req.sample_id,
@@ -183,12 +227,15 @@ def _predict_one(req: PredictRequest) -> PredictResponse:
             if pd.notna(val):
                 top.append(TopFeature(name=name, value=float(val)))
 
+    reason = _reason_pattern(delay, X.iloc[0])
     return PredictResponse(
         sample_id=req.sample_id,
         delay_pred_sec=round(delay, 1),
         risk_score=round(_risk(delay), 3),
         confidence=round(_confidence(residuals), 3),
         top_features=top,
+        reason_pattern=reason,
+        recommendation=REASON_TO_RECOMMENDATION.get(reason, "monitor"),
         model_version=MODEL_VERSION,
     )
 
