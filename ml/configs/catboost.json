@@ -1,0 +1,5 @@
+{
+  "params": {"depth": 8, "iterations": 600, "learning_rate": 0.07, "loss_function": "RMSE", "l2_leaf_reg": 3.0},
+  "w_syn": 1.0,
+  "n_seeds": 5
+}
