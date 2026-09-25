@@ -26,7 +26,13 @@ def baseline_cur_dev(points: pd.DataFrame) -> np.ndarray:
 
 
 def model_predict(dataset_dir: Path, model_path: Path) -> tuple[pd.DataFrame, np.ndarray]:
-    """Загружает чекпоинт, строит фичи на validate, возвращает (points, абсолютные предсказания)."""
+    """Загружает чекпоинт (одиночный или ансамбль), строит фичи на validate,
+    возвращает (points, абсолютные предсказания).
+
+    Поддерживает оба формата:
+      - {"state_dict": ...}       — одиночная модель (train.py)
+      - {"state_dicts": [...]}    — ансамбль N моделей (train_ensemble.py)
+    """
     import torch
 
     from features.from_csv import build_features, load_split
@@ -50,16 +56,26 @@ def model_predict(dataset_dir: Path, model_path: Path) -> tuple[pd.DataFrame, np
         static_mean=ckpt["static_mean"],
         static_std=ckpt["static_std"],
     )
-    model = SeqDelayModel(
-        seq_feat_dim=ckpt["seq_feat_dim"],
-        static_feat_dim=ckpt["static_feat_dim"],
-        hidden=ckpt["hidden"],
-        num_layers=ckpt["num_layers"],
-        dropout=ckpt.get("dropout", 0.0),
-    )
-    model.load_state_dict(ckpt["state_dict"])
 
-    residuals = predict_residual(model, ds)
+    if "state_dicts" in ckpt:
+        state_dicts = ckpt["state_dicts"]
+        print(f"[ensemble] {len(state_dicts)} моделей")
+    else:
+        state_dicts = [ckpt["state_dict"]]
+
+    residual_sum = np.zeros(len(points), dtype=np.float64)
+    for i, sd in enumerate(state_dicts):
+        model = SeqDelayModel(
+            seq_feat_dim=ckpt["seq_feat_dim"],
+            static_feat_dim=ckpt["static_feat_dim"],
+            hidden=ckpt["hidden"],
+            num_layers=ckpt["num_layers"],
+            dropout=ckpt.get("dropout", 0.0),
+        )
+        model.load_state_dict(sd)
+        residual_sum += predict_residual(model, ds)
+
+    residuals = residual_sum / len(state_dicts)
     cur_dev = points["cur_dev_s"].fillna(0.0).to_numpy(dtype=np.float32)
     predictions = residuals + cur_dev
     return points, predictions
