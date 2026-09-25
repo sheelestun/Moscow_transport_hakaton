@@ -223,3 +223,7 @@ __marimo__/
 
 # Сабмиты — генерируются ml/src/predict_submission.py, в git не храним
 /submission*.csv
+/test_pred*.csv
+
+# Артефакты обучения (чекпоинты моделей) — большие и воспроизводимые, в git не храним
+/ml/artifacts/

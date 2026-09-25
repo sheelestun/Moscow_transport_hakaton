@@ -1,21 +1,62 @@
 """Собирает submission.csv по validate/points.csv.
 
-По умолчанию — бейзлайн prediction = cur_dev_s (даёт score ≈ 0.40).
-Когда появится обученная модель — заменить `predict_fn` в main().
+Режимы:
+  --baseline               prediction = cur_dev_s (score ≈ 0.40)
+  --model <path.pt>        обученная sequence-модель из train.py (residual + cur_dev_s)
+
+Формат сабмита: sample_id;prediction, разделитель ';', CRLF (совпадает с sample_submission.csv).
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 
 def baseline_cur_dev(points: pd.DataFrame) -> np.ndarray:
     """Прогноз = задержка на последней уже пройденной остановке."""
     return points["cur_dev_s"].fillna(0.0).values
+
+
+def model_predict(dataset_dir: Path, model_path: Path) -> tuple[pd.DataFrame, np.ndarray]:
+    """Загружает чекпоинт, строит фичи на validate, возвращает (points, абсолютные предсказания)."""
+    import torch
+
+    from features.from_csv import build_features, load_split
+    from models.torch_seq import DelaySeqDataset, SeqDelayModel, predict_residual
+
+    ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+
+    points, traffic, schedule = load_split(dataset_dir, "validate")
+    static_df, seq_array = build_features(points, traffic, schedule, seq_len=ckpt["seq_len"])
+    static_np = static_df.to_numpy(dtype=np.float32)
+
+    ds = DelaySeqDataset(
+        seq_array,
+        static_np,
+        target=None,
+        static_mean=ckpt["static_mean"],
+        static_std=ckpt["static_std"],
+    )
+    model = SeqDelayModel(
+        seq_feat_dim=ckpt["seq_feat_dim"],
+        static_feat_dim=ckpt["static_feat_dim"],
+        hidden=ckpt["hidden"],
+        num_layers=ckpt["num_layers"],
+        dropout=ckpt.get("dropout", 0.0),
+    )
+    model.load_state_dict(ckpt["state_dict"])
+
+    residuals = predict_residual(model, ds)
+    cur_dev = points["cur_dev_s"].fillna(0.0).to_numpy(dtype=np.float32)
+    predictions = residuals + cur_dev
+    return points, predictions
 
 
 def build_submission(points: pd.DataFrame, predictions: np.ndarray) -> pd.DataFrame:
@@ -36,19 +77,20 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Сборка submission.csv для validate")
     ap.add_argument("--dataset", required=True, type=Path, help="Корень датасета (там есть validate/)")
     ap.add_argument("--out", required=True, type=Path, help="Куда писать submission.csv")
-    ap.add_argument("--baseline", action="store_true", help="Использовать бейзлайн cur_dev_s")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--baseline", action="store_true", help="Использовать бейзлайн cur_dev_s")
+    mode.add_argument("--model", type=Path, help="Путь к чекпоинту .pt из train.py")
     args = ap.parse_args()
 
-    points_path = args.dataset / "validate" / "points.csv"
-    points = pd.read_csv(points_path)
-    print(f"загружено точек: {len(points)} из {points_path}")
-
     if args.baseline:
+        points_path = args.dataset / "validate" / "points.csv"
+        points = pd.read_csv(points_path)
+        print(f"загружено точек: {len(points)} из {points_path}")
         predictions = baseline_cur_dev(points)
     else:
-        raise NotImplementedError(
-            "Добавьте вызов обученной модели вместо baseline. Пока используйте --baseline."
-        )
+        print(f"[model] {args.model}")
+        points, predictions = model_predict(args.dataset, args.model)
+        print(f"загружено точек: {len(points)}")
 
     sub = build_submission(points, predictions)
     write_submission(sub, args.out)
