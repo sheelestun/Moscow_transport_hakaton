@@ -1,0 +1,7 @@
+artifacts/*
+!artifacts/.gitkeep
+notebooks/.ipynb_checkpoints/
+*.pyc
+__pycache__/
+.venv/
+.env
