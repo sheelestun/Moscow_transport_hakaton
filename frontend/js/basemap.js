@@ -74,7 +74,7 @@ App.basemapStyle = function () {
           "symbol-placement": "line",
           "text-field": name,
           "text-font": ["Noto Sans Regular"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 17, 13],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 13, 11.5, 17, 14.5],
         },
         paint: { "text-color": C.label, "text-halo-color": C.labelHalo, "text-halo-width": 1.4 },
       },
@@ -89,7 +89,7 @@ App.basemapStyle = function () {
         layout: {
           "text-field": name,
           "text-font": ["Noto Sans Regular"],
-          "text-size": 11,
+          "text-size": 12.5,
           "text-transform": "uppercase",
           "text-letter-spacing": 0.08,
         },

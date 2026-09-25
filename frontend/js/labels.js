@@ -11,6 +11,7 @@ App.labels = {
     accumulated_delay: "Накопленное опоздание с прошлых остановок",
   },
   recommendations: {
+    add_reserve: "Выпустить резервное ТС",
     release_reserve: "Выпустить резервное ТС",
     adjust_interval: "Скорректировать интервалы на маршруте",
     detour: "Предложить объезд проблемного участка",
@@ -40,15 +41,31 @@ App.labels = {
     bunching: "Интервал до соседнего ТС сократился: машины идут «пачкой», и это ТС собирает больше пассажиров.",
     accumulated_delay: "Опоздание накопилось на предыдущих участках и пока не отыгрывается.",
   },
+  // Сценарии What-if — те же коды, что в ML-сервисе (WHATIF_DELTA_MAP в ml/src/inference_service.py)
+  // Виды транспорта (поле transport_type у маршрута) — в том порядке, как показываем в меню
+  transport: {
+    bus: "Автобусы",
+    electrobus: "Электробусы",
+    trolleybus: "Троллейбусы",
+    tram: "Трамваи",
+  },
   scenarios: {
     add_reserve: "Выпустить резервное ТС",
     adjust_interval: "Скорректировать интервалы",
+    detour: "Пустить в объезд",
+    signal_priority: "Приоритет на светофорах",
+    hold_at_stop: "Придержать на остановке",
   },
 
   // Перевод кода в текст; если перевода нет — показываем код как есть
   t(dict, code) {
     return (this[dict] && this[dict][code]) || code || "—";
   },
+};
+
+// Код рекомендации -> код сценария What-if (release_reserve — старое имя add_reserve)
+App.toScenario = function (rec) {
+  return rec === "release_reserve" ? "add_reserve" : rec;
 };
 
 // ---------- Уровень риска ----------

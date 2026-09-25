@@ -11,10 +11,11 @@ window.App = window.App || {};
   let handlers = {};
   const markers = new Map(); // vehicle_id -> {marker, el, from, to, t0, level}
   let selectedId = null;
-  let riskMode = false;
+  let riskMode = true;  // цвет риска на линиях маршрутов включён по умолчанию
   let popup;
   let ready = false;       // подложка и наши слои загружены
   let pendingRoutes = null; // маршруты, пришедшие раньше, чем загрузилась карта
+  let visible = null;       // Set route_id видимых линий или null = все
 
   const empty = { type: "FeatureCollection", features: [] };
 
@@ -46,10 +47,22 @@ window.App = window.App || {};
 
       requestAnimationFrame(animate);
 
+      // Размер точек зависит от масштаба: при отдалении зелёные становятся точками,
+      // жёлтые — меньше, красные не меняются (проблему видно при любом масштабе)
+      const zoomClass = () => {
+        const z = map.getZoom();
+        const c = map.getContainer().classList;
+        c.toggle("zoom-far", z < 11.5);
+        c.toggle("zoom-mid", z >= 11.5 && z < 13);
+      };
+      map.on("zoom", zoomClass);
+      zoomClass();
+
       return new Promise((resolve) => map.on("load", () => {
         addOwnLayers();
         ready = true;
         if (pendingRoutes) this.drawRoutes(pendingRoutes);
+        this.setVisibleRoutes(visible);
         this.setRiskMode(riskMode);
         resolve();
       }));
@@ -70,6 +83,8 @@ window.App = window.App || {};
       const b = new maplibregl.LngLatBounds();
       routes.forEach((r) => r.geometry.forEach((p) => b.extend(ll(p))));
       if (!b.isEmpty()) map.fitBounds(b, { padding: 60, duration: 0 });
+      const shown = visible ? routes.filter((r) => visible.has(r.route_id)) : routes;
+      if (shown.length && shown.length < routes.length) this.fitRoutes(shown, 0);
     },
 
     // Уровни риска маршрутов: {route_id: "red" | "yellow" | "green"}
@@ -83,6 +98,24 @@ window.App = window.App || {};
           geometry: { type: "LineString", coordinates: r.geometry.map(ll) },
         })),
       });
+    },
+
+    // Показать только выбранные линии (null — все)
+    setVisibleRoutes(set) {
+      visible = set;
+      for (const m of markers.values()) m.el.style.display = isShown(m.data.route_id) ? "" : "none";
+      if (!ready) return;
+      map.setFilter("routes-line", set ? ["in", ["get", "route_id"], ["literal", [...set]]] : null);
+    },
+
+    // Пересчитать размер карты после изменения раскладки страницы
+    resize() { if (map) map.resize(); },
+
+    fitRoutes(routes, duration = 700) {
+      if (!routes.length) return;
+      const b = new maplibregl.LngLatBounds();
+      routes.forEach((r) => r.geometry.forEach((p) => b.extend(ll(p))));
+      map.fitBounds(b, { padding: 70, maxZoom: 14, duration });
     },
 
     // Переключатель «риск на маршрутах»: цветные линии вместо серых
@@ -100,9 +133,10 @@ window.App = window.App || {};
         let m = markers.get(v.vehicle_id);
         if (!m) {
           const el = document.createElement("button");
-          el.className = "veh";
+          el.className = "veh" + (v.is_reserve ? " veh--reserve" : "");
           el.setAttribute("aria-label", `ТС ${v.vehicle_id}, маршрут ${v.route_id}`);
-          el.innerHTML = `<span>${App.esc(v.route_id)}</span>`;
+          el.innerHTML = `<span>${v.is_reserve ? "Р" : App.esc(v.route_id)}</span>`;
+          if (v.is_reserve) el.title = "Резервное ТС";
           el.addEventListener("click", (ev) => { ev.stopPropagation(); handlers.onVehicle && handlers.onVehicle(v.vehicle_id); });
           el.addEventListener("mouseenter", () => showPopup(v.vehicle_id));
           el.addEventListener("mouseleave", () => popup.remove());
@@ -117,6 +151,7 @@ window.App = window.App || {};
           m.t0 = now;
         }
         m.data = v;
+        m.el.style.display = isShown(v.route_id) ? "" : "none";
         if (m.level !== level) {
           m.el.classList.remove("veh--red", "veh--yellow", "veh--green");
           m.el.classList.add(`veh--${level}`);
@@ -192,6 +227,8 @@ window.App = window.App || {};
     },
   };
 
+  const isShown = (routeId) => !visible || visible.has(routeId);
+
   function addOwnLayers() {
     map.addSource("routes", { type: "geojson", data: empty });
     map.addSource("sel-line", { type: "geojson", data: empty });
@@ -240,7 +277,7 @@ window.App = window.App || {};
       layout: {
         "text-field": ["get", "label"],
         "text-font": ["case", ["get", "target"], ["literal", ["Noto Sans Bold"]], ["literal", ["Noto Sans Regular"]]],
-        "text-size": ["case", ["get", "target"], 13, 11.5],
+        "text-size": ["case", ["get", "target"], 15, 13],
         "text-anchor": "left",
         "text-offset": [1, 0],
         "text-allow-overlap": false,

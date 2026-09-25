@@ -24,7 +24,7 @@ python -m http.server 3000
 ### Docker
 ```bash
 docker build -t dashboard ./frontend
-docker run --rm -p 3000:3000 dashboard
+docker run --rm -p 3000:80 dashboard
 ```
 
 ## Структура
@@ -41,7 +41,8 @@ frontend/
     ├── api.js          живой бэкенд: REST + WebSocket с переподключением
     ├── basemap.js      стиль подложки карты (что рисовать и какими цветами)
     ├── map.js          карта MapLibre: маршруты, ТС, подсветка выбранного маршрута
-    ├── sidebar.js      левая панель: алерты, маршруты, карточка ТС, расписание, What-if
+    ├── sidebar.js      правая панель: алерты, маршруты, карточка ТС, расписание
+    ├── whatif.js       окно «Что если…»: сравнение всех мер и кнопка «Применить» (в демо)
     └── app.js          состояние и связка всего вместе
 ```
 
@@ -51,10 +52,12 @@ frontend/
 
 **`GET /routes`**
 ```json
-[{ "route_id": "М1", "name": "Охотный Ряд — Сокол",
+[{ "route_id": "М1", "name": "Охотный Ряд — Сокол", "transport_type": "bus",
    "geometry": [[55.7577, 37.6146], [55.7654, 37.6040]],
    "stops": [{ "stop_id": "53700172828", "name": "Пушкинская пл.", "lat": 55.7654, "lon": 37.6040 }] }]
 ```
+
+`transport_type` (необязательно): `bus` | `electrobus` | `trolleybus` | `tram`. Если приходит — в меню «Линии» появляется выбор по видам транспорта.
 
 **`GET /vehicles`**, WS `vehicle.update` (одно ТС или `{"type":"vehicle.update","vehicles":[...]}`)
 ```json
@@ -66,7 +69,7 @@ frontend/
 `target_stop_name`, `confidence`, `top_features`, `model_version`.
 WS `alert.resolved`: `{ "type": "alert.resolved", "alert_id": "a-91021" }`.
 
-**`POST /whatif`** `{ "scenario": "add_reserve" | "adjust_interval", "route_id", "at_stop_id" }` →
+**`POST /whatif`** `{ "scenario": "add_reserve" | "adjust_interval" | "detour" | "signal_priority" | "hold_at_stop", "route_id", "at_stop_id" }` (коды — как в `WHATIF_DELTA_MAP` ML-сервиса; бэкенд может звать `POST /whatif/predict` у ML для каждого ТС маршрута) →
 ```json
 { "summary": { "avg_delay_before_sec": 140, "avg_delay_after_sec": 60, "red_before": 2, "red_after": 0 },
   "vehicles": [{ "vehicle_id": "131672", "delay_before_sec": 187, "delay_after_sec": 70,
@@ -89,7 +92,7 @@ WS `alert.resolved`: `{ "type": "alert.resolved", "alert_id": "a-91021" }`.
 
 В `vehicle.update` для жёлтых/красных ТС желательно также: `reason_pattern`, `recommendation`, `top_features`, `confidence` — чтобы по клику на любое ТС было видно, почему оно опаздывает.
 
-**`GET /metrics/model`** → `{ "mae_sec": 61.4, "p95_latency_ms": 42, ... }`
+**`GET /metrics/model`** → как у ML-сервиса: `{ "mae_test_s": 43.7, "latency_ms_p50": 18, "model_version": "..." }` (бэкенд может просто проксировать)
 
 Светофор: `risk_score ≥ 0.7` — красный, `≥ 0.35` — жёлтый, иначе зелёный (`js/config.js`).
 Бэкенду нужно разрешить CORS для адреса дашборда.

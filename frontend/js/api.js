@@ -50,6 +50,9 @@ window.App = window.App || {};
               case "alert.new":
                 h.onAlertNew && h.onAlertNew(msg);
                 break;
+              case "alert.verified":
+                h.onAlertVerified && h.onAlertVerified(msg);
+                break;
               case "alert.resolved":
                 h.onAlertResolved && h.onAlertResolved(msg.alert_id);
                 break;

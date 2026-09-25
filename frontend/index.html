@@ -35,6 +35,19 @@
     </div>
   </header>
 
+  <!-- ШКАЛА «СЛЕДУЮЩИЕ 15 МИНУТ»: будущие инциденты на оси времени -->
+  <section class="horizon" aria-label="Инциденты в ближайшие 15 минут">
+    <div class="horizon__title">
+      <b>Ближайшие 15 минут</b>
+      <span id="horizon-count"></span>
+    </div>
+    <div class="horizon__track" id="horizon">
+      <div class="horizon__window" title="Модель предупреждает об опоздании за 10–15 минут"><span>окно прогноза 10–15 мин</span></div>
+    </div>
+    <span class="horizon__summary" id="horizon-summary"></span>
+    <button class="horizon__toggle" id="horizon-toggle" aria-expanded="true" title="Свернуть шкалу, чтобы освободить место для карты">Свернуть ▴</button>
+  </section>
+
   <main class="layout">
 
     <!-- КАРТА -->
@@ -42,15 +55,36 @@
       <div id="map"></div>
 
       <div class="map-tools">
+        <div class="lines">
+          <button class="lines__btn" id="lines-btn" aria-expanded="false" aria-controls="lines-menu">
+            Линии: <b id="lines-label">все</b> <span aria-hidden="true">▾</span>
+          </button>
+          <div class="lines__menu" id="lines-menu" hidden>
+            <input class="lines__search" id="lines-search" type="search" placeholder="Номер или название: 144, Сокол…" autocomplete="off" aria-label="Поиск линии" />
+            <div class="lines__types" id="lines-types" role="group" aria-label="Вид транспорта"></div>
+            <div class="lines__head">
+              <span id="lines-found">Какие линии показывать</span>
+              <span class="lines__actions"><button class="link" id="lines-all">Отметить все</button><button class="link" id="lines-none">Снять все</button></span>
+            </div>
+            <div class="lines__list" id="lines-list"></div>
+            <p class="lines__hint">Выбранные линии видны на карте, в списке «Требуют внимания» и в цифрах сверху. Выбор запоминается.</p>
+          </div>
+        </div>
         <label class="toggle">
-          <input type="checkbox" id="risk-toggle" />
+          <input type="checkbox" id="risk-toggle" checked />
           <span class="toggle__track"><span class="toggle__thumb"></span></span>
           Риск на маршрутах
         </label>
+        <button class="net-btn" id="net-btn" hidden title="Проверить, как дашборд переживает потерю связи с сервером">Обрыв связи</button>
         <div class="speed" id="speed" role="group" aria-label="Скорость симуляции" hidden>
           <span class="speed__label">Симуляция</span>
           <button data-x="1">×1</button><button data-x="5">×5</button><button data-x="20">×20</button>
         </div>
+      </div>
+
+      <div class="offline" id="offline" hidden>
+        <b>Нет связи с сервером</b>
+        <span id="offline-text">Показано последнее известное состояние. Переподключаемся…</span>
       </div>
 
       <div class="legend">
@@ -69,13 +103,37 @@
           <p class="muted">Опоздание, которое модель ожидает через 10–15 минут. Нажмите, чтобы увидеть причину и расписание.</p>
         </div>
         <ul class="alerts" id="alerts"></ul>
+        <p class="alerts-hidden" id="alerts-hidden" hidden></p>
+
+        <div class="panel__head panel__head--sub">
+          <h3>Сбылись ли прогнозы</h3>
+          <p class="muted" id="verified-score">Когда наступает время инцидента, сверяем прогноз с фактом.</p>
+        </div>
+        <ul class="verified" id="verified"></ul>
 
         <div class="panel__head panel__head--sub"><h3>Маршруты</h3></div>
         <ul class="routes" id="routes"></ul>
       </div>
       <div id="view-vehicle" hidden></div>
     </aside>
+
+    <!-- СРАВНЕНИЕ МЕР: выезжает поверх правой панели, карта остаётся видна -->
+    <aside class="drawer" id="whatif-modal" hidden aria-labelledby="wi-title">
+      <header class="drawer__head">
+        <button class="link" id="wi-close">← Назад к автобусу</button>
+        <h2 id="wi-title">Сравнение мер</h2>
+        <p class="muted" id="wi-sub"></p>
+      </header>
+      <div class="drawer__body" id="wi-body"></div>
+      <footer class="drawer__foot">
+        <button class="btn btn--ghost" id="wi-cancel">Отмена</button>
+        <button class="btn" id="wi-apply" hidden>Применить</button>
+      </footer>
+    </aside>
   </main>
+
+  <!-- Короткие уведомления внизу экрана -->
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <!-- Библиотека карты -->
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
@@ -90,6 +148,7 @@
   <script src="js/basemap.js"></script>
   <script src="js/map.js"></script>
   <script src="js/sidebar.js"></script>
+  <script src="js/whatif.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

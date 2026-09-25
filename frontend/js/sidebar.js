@@ -7,13 +7,23 @@ window.App = window.App || {};
 
   App.sidebar = {
     // ================= Список =================
-    renderAlerts(alerts, { onSelect }) {
+    renderAlerts(alerts, opts) {
+      const { onSelect } = opts;
+      // Подсказка про алерты на скрытых линиях — чтобы не пропустить проблему
+      const h = opts.hidden || { count: 0 };
+      $("alerts-hidden").hidden = !h.count;
+      if (h.count) {
+        $("alerts-hidden").innerHTML = `Ещё ${h.count} на скрытых линиях (${h.routes.map(App.esc).join(", ")}) · <button class="link" id="show-all-lines">показать все линии</button>`;
+        $("show-all-lines").onclick = opts.onShowAll;
+      }
       const ul = $("alerts");
       $("alerts-count").textContent = alerts.length;
       $("alerts-count").classList.toggle("badge--hot", alerts.length > 0);
 
       if (!alerts.length) {
-        ul.innerHTML = `<li class="empty">Всё по графику. Опозданий в ближайшие 15 минут не ожидается.</li>`;
+        ul.innerHTML = opts.noLines
+          ? `<li class="empty empty--muted">Линии не выбраны. Нажмите «Линии» на карте и отметьте нужные.</li>`
+          : `<li class="empty">Всё по графику. Опозданий в ближайшие 15 минут не ожидается.</li>`;
         return;
       }
       ul.innerHTML = alerts.map((a) => {
@@ -94,6 +104,7 @@ window.App = window.App || {};
           <div class="hero__label">Прогноз через 10–15 минут</div>
           <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}</div>
           ${whereName ? `<div class="hero__where">к остановке «${App.esc(whereName)}» · ${App.fmtTime(whereTime)} (${App.fmtIn(whereTime)})</div>` : ""}
+          ${problemHtml(schedule, level)}
           <div class="hero__grid">
             <div><span class="muted">Сейчас</span><b class="t-${App.delayLevel(v.delay_now_sec)}">${App.fmtDelayShort(v.delay_now_sec)}</b></div>
             <div><span class="muted">Скорость</span><b>${v.speed ?? "—"} км/ч</b></div>
@@ -117,17 +128,60 @@ window.App = window.App || {};
       }
 
       // --- Что делать (перерисовываем только при смене уровня/алерта, чтобы не сбить выбор в What-if) ---
-      const actKey = level === "green" ? "green" : `${(alert && alert.recommendation) || v.recommendation}|${alert ? alert.alert_id : ""}`;
+      const rec = App.toScenario((alert && alert.recommendation) || v.recommendation);
+      const applied = this._ctx.isApplied(v.route_id);
+      const actKey = level === "green" ? "green" : `${rec}|${alert ? alert.alert_id : ""}|${applied ? applied.at : ""}`;
       if (actKey !== this._actKey) {
         this._actKey = actKey;
-        $("vh-act").innerHTML = level === "green" ? "" : actHtml((alert && alert.recommendation) || v.recommendation, alert, whatif);
-        bindAct(this._ctx, v);
+        const ctx = this._ctx;
+        if (level === "green") {
+          $("vh-act").innerHTML = "";
+        } else {
+          $("vh-act").innerHTML = actHtml(rec, alert, null, applied, ctx.canApply);
+          bindAct(ctx, rec);
+          // Эффект рекомендованной меры считаем сразу — чтобы диспетчер видел пользу без лишних кликов
+          if (App.labels.scenarios[rec] && !applied) {
+            ctx.onRecEffect(rec).then((eff) => {
+              if (this._actKey !== actKey) return;
+              $("vh-act").innerHTML = actHtml(rec, alert, eff, applied, ctx.canApply);
+              bindAct(ctx, rec);
+            }).catch(() => {});
+          }
+        }
       }
 
       // --- Расписание ---
       $("vh-sched").innerHTML = schedule ? scheduleHtml(schedule) : `<h4>Расписание</h4><p class="muted">Загружаем…</p>`;
     },
   };
+
+  // Проблемный участок: перегон до целевой остановки, где опоздание растёт сильнее всего
+  function problemSegment(sch) {
+    if (!sch) return null;
+    const st = sch.stops;
+    const targetIdx = st.findIndex((s) => s.is_target);
+    const end = targetIdx >= 0 ? targetIdx : st.length - 1;
+    let best = null;
+    for (let i = 1; i <= end; i++) {
+      const a = st[i - 1], b = st[i];
+      if (b.status === "passed") continue; // уже проехали
+      const grow = (b.delay_sec || 0) - (a.delay_sec || 0);
+      if (!best || grow > best.grow) best = { from: a.name, to: b.name, grow, delay: b.delay_sec };
+    }
+    return best && best.grow >= 20 ? best : null;
+  }
+
+  function problemHtml(sch, level) {
+    if (level === "green") return "";
+    const p = problemSegment(sch);
+    if (!p) return "";
+    return `
+      <div class="problem">
+        <span class="problem__label">Проблемный участок</span>
+        <b>${App.esc(p.from)} → ${App.esc(p.to)}</b>
+        <span class="problem__grow">опоздание вырастет на ${App.fmtDelayShort(p.grow)} за перегон</span>
+      </div>`;
+  }
 
   function featBars(feats) {
     const list = feats.slice().sort((a, b) => b.contribution - a.contribution);
@@ -140,65 +194,49 @@ window.App = window.App || {};
       </div>`).join("");
   }
 
-  function actHtml(rec, alert, whatif) {
+  // Блок «Рекомендация»: мера, её эффект и кнопка «Применить»
+  function actHtml(rec, alert, eff, applied, canApply) {
+    const known = !!App.labels.scenarios[rec];
+    let effect = "";
+    if (applied) {
+      effect = `<div class="rec__done">✓ Применено в ${App.fmtTime(new Date(applied.at))}: ${App.esc(App.labels.scenarios[applied.scenario])}. Опоздания на маршруте отыгрываются — следите за картой.</div>`;
+    } else if (known && !eff) {
+      effect = `<div class="rec__effect rec__effect--loading">Считаем эффект…</div>`;
+    } else if (eff) {
+      const s = eff.summary;
+      const gain = s.avg_delay_before_sec - s.avg_delay_after_sec;
+      effect = `
+        <div class="rec__effect">
+          <div>
+            <span class="rec__num ${gain > 0 ? "t-green" : "t-red"}">${gain > 0 ? "−" : "+"}${App.fmtDelayShort(Math.abs(gain)).replace(/^[+−]/, "")}</span>
+            <span class="rec__cap">среднее опоздание<br>на маршруте</span>
+          </div>
+          <div>
+            <span class="rec__num">${s.red_before} → <span class="${s.red_after < s.red_before ? "t-green" : ""}">${s.red_after}</span></span>
+            <span class="rec__cap">опаздывающих<br>автобусов</span>
+          </div>
+        </div>`;
+    }
     return `
       <div class="block block--rec">
         <h4>Рекомендация</h4>
         <p class="rec">${t("recommendations", rec)}</p>
-        <div class="whatif-box">
-          <div class="muted small">Проверить заранее: что будет, если…</div>
-          <div class="scenarios">
-            ${Object.entries(App.labels.scenarios).map(([k, v], i) => `
-              <label class="scenario"><input type="radio" name="scenario" id="sc-${k}" value="${k}" ${i === 0 ? "checked" : ""}> ${v}</label>`).join("")}
-          </div>
-          <div class="row">
-            <button class="btn" id="whatif-btn">Рассчитать эффект</button>
-            ${alert ? `<button class="btn btn--ghost" id="ack-btn">Принято</button>` : ""}
-          </div>
-          <div id="whatif-result">${whatif ? whatifHtml(whatif) : ""}</div>
+        ${effect}
+        <div class="row">
+          ${known && canApply && !applied ? `<button class="btn" id="apply-btn">Применить</button>` : ""}
+          <button class="btn btn--ghost" id="whatif-btn">Другие меры</button>
         </div>
+        ${alert ? `<button class="link link--muted" id="ack-btn">Скрыть алерт — уже знаю</button>` : ""}
       </div>`;
   }
 
-  function bindAct(ctx, v) {
+  function bindAct(ctx, rec) {
+    const apply = $("apply-btn");
+    if (apply) apply.onclick = async () => { apply.disabled = true; apply.textContent = "Применяем…"; await ctx.onApply(rec); };
     const btn = $("whatif-btn");
-    if (btn) btn.onclick = async () => {
-      const scenario = document.querySelector('input[name="scenario"]:checked').value;
-      btn.disabled = true;
-      btn.textContent = "Считаем…";
-      try {
-        $("whatif-result").innerHTML = whatifHtml(await ctx.onWhatif(scenario));
-      } catch (e) {
-        $("whatif-result").innerHTML = `<p class="error">Не удалось рассчитать: ${App.esc(e.message)}. Проверьте связь с сервером и попробуйте ещё раз.</p>`;
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Рассчитать эффект";
-      }
-    };
+    if (btn) btn.onclick = () => ctx.onWhatifOpen();
     const ack = $("ack-btn");
     if (ack) ack.onclick = ctx.onAck;
-  }
-
-  function whatifHtml(w) {
-    const s = w.summary || {};
-    const max = Math.max(60, ...(w.vehicles || []).map((v) => Math.abs(v.delay_before_sec)));
-    const bar = (sec) => `${Math.max(2, (sec / max) * 100)}%`;
-    return `
-      <div class="whatif">
-        <div class="whatif__summary">
-          <div><span class="muted small">Среднее опоздание на маршруте</span>
-            <b>${App.fmtDelayShort(s.avg_delay_before_sec)} → <span class="t-green">${App.fmtDelayShort(s.avg_delay_after_sec)}</span></b></div>
-          <div><span class="muted small">Опаздывающих ТС</span>
-            <b>${s.red_before ?? "—"} → <span class="t-green">${s.red_after ?? "—"}</span></b></div>
-        </div>
-        ${(w.vehicles || []).map((v) => `
-          <div class="wrow">
-            <span>ТС ${App.esc(v.vehicle_id)}</span>
-            <span class="wrow__bars"><i class="b-before" style="width:${bar(v.delay_before_sec)}"></i><i class="b-after" style="width:${bar(v.delay_after_sec)}"></i></span>
-            <span class="wrow__val">${App.fmtDelayShort(v.delay_before_sec)} → ${App.fmtDelayShort(v.delay_after_sec)}</span>
-          </div>`).join("")}
-        <div class="legend-inline muted small"><i class="b-before"></i>сейчас <i class="b-after"></i>после меры</div>
-      </div>`;
   }
 
   function scheduleHtml(sch) {
