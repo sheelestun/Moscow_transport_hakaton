@@ -30,6 +30,7 @@ from features.from_csv import (  # noqa: E402
     STATIC_FEATURES,
     build_features,
     build_target_residual,
+    compute_history_stats,
     load_split,
 )
 from models.torch_seq import (  # noqa: E402
@@ -66,12 +67,17 @@ def main() -> None:
     te_points, te_traffic, te_schedule = load_split(args.dataset, "test")
     print(f"[load] test:  points={len(te_points)}, traffic={len(te_traffic)}, schedule={len(te_schedule)}")
 
+    history = compute_history_stats(tr_points)
+    print(f"[hist] tr_ids={len(history['tr_delay_mean'])}, "
+          f"global_delay_mean={history['global_delay_mean']:.1f}, "
+          f"global_curdev_mean={history['global_curdev_mean']:.1f}")
+
     print("[features] train")
-    tr_static, tr_seq = build_features(tr_points, tr_traffic, tr_schedule)
+    tr_static, tr_seq = build_features(tr_points, tr_traffic, tr_schedule, history=history)
     tr_y = build_target_residual(tr_points)
 
     print("[features] test")
-    te_static, te_seq = build_features(te_points, te_traffic, te_schedule)
+    te_static, te_seq = build_features(te_points, te_traffic, te_schedule, history=history)
     te_y = build_target_residual(te_points)
 
     if tr_y is None or te_y is None:
@@ -139,6 +145,7 @@ def main() -> None:
             "hidden": args.hidden,
             "num_layers": args.num_layers,
             "dropout": args.dropout,
+            "history": history,
             "test_mae_abs": mae_model,
             "test_mae_baseline": mae_baseline,
         },

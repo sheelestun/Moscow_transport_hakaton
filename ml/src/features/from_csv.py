@@ -29,8 +29,18 @@ STATIC_FEATURES = [
     "dist_to_target_m",
     "planned_time_to_target_sec",
     "planned_avg_speed_ms",
-    "hour_of_day",
-    "weekday",
+    "speed_trend",
+    "speed_vs_planned",
+    "hour_sin",
+    "hour_cos",
+    "weekday_sin",
+    "weekday_cos",
+    # Target-encoding по tr_id и часу — восстановлены из train
+    # (для test/validate передаются извне; при отсутствии — глобальное среднее).
+    "tr_hist_delay_mean",
+    "tr_hist_delay_std",
+    "tr_hist_cur_dev_mean",
+    "hour_hist_delay_mean",
 ]
 
 SEQ_FEATURES = ["dt_from_prev_sec", "speed", "heading", "dist_to_target_m", "valid_flag"]
@@ -103,18 +113,60 @@ def _group_traffic_sorted(traffic: pd.DataFrame) -> dict[int, pd.DataFrame]:
     return {tr_id: g.reset_index(drop=True) for tr_id, g in traffic.groupby("tr_id")}
 
 
+def compute_history_stats(train_points: pd.DataFrame) -> dict:
+    """Считает target-encoding статистики по train (для test/validate).
+
+    Возвращает dict со словарями по tr_id / hour + глобальные средние (fallback).
+    Использовать только на train, чтобы не было утечки в test.
+    """
+    if "target_delay_s" not in train_points.columns:
+        raise ValueError("history можно считать только из train с target_delay_s")
+
+    tr_grp = train_points.groupby("tr_id")
+    tr_delay_mean = tr_grp["target_delay_s"].mean().to_dict()
+    tr_delay_std = tr_grp["target_delay_s"].std().fillna(0.0).to_dict()
+    tr_curdev_mean = tr_grp["cur_dev_s"].mean().to_dict()
+
+    hours = pd.to_datetime(train_points["T"]).dt.hour
+    hour_grp = train_points.assign(_h=hours.values).groupby("_h")
+    hour_delay_mean = hour_grp["target_delay_s"].mean().to_dict()
+
+    return {
+        "tr_delay_mean": tr_delay_mean,
+        "tr_delay_std": tr_delay_std,
+        "tr_curdev_mean": tr_curdev_mean,
+        "hour_delay_mean": hour_delay_mean,
+        "global_delay_mean": float(train_points["target_delay_s"].mean()),
+        "global_delay_std": float(train_points["target_delay_s"].std()),
+        "global_curdev_mean": float(train_points["cur_dev_s"].mean()),
+    }
+
+
 def build_features(
     points: pd.DataFrame,
     traffic: pd.DataFrame,
     schedule: pd.DataFrame,
     seq_len: int = SEQ_LEN,
+    history: Optional[dict] = None,
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Основная функция: собирает static-фичи и sequence-тензор.
 
     static_df.index = sample_id, порядок строк совпадает с axis=0 seq_array.
+
+    history — результат compute_history_stats(train_points). Если None,
+    tr/hour-статистики считаются на self (для train — это OK, для test/validate — утечка).
     """
     traffic_by_tr = _group_traffic_sorted(traffic)
     stop_coords = _stop_coords_map(schedule)
+    if history is None and "target_delay_s" in points.columns:
+        history = compute_history_stats(points)
+    if history is None:
+        # validate без train-history: используем нули как fallback (нужно передать history)
+        history = {
+            "tr_delay_mean": {}, "tr_delay_std": {}, "tr_curdev_mean": {},
+            "hour_delay_mean": {},
+            "global_delay_mean": 0.0, "global_delay_std": 0.0, "global_curdev_mean": 0.0,
+        }
 
     n = len(points)
     seq_array = np.zeros((n, seq_len, len(SEQ_FEATURES)), dtype=np.float32)
@@ -134,7 +186,7 @@ def build_features(
             window = traffic.iloc[0:0]
 
         static_rows.append(
-            _compute_static(row, window, t_ts, target_lat, target_lon, cur_dev)
+            _compute_static(row, window, t_ts, target_lat, target_lon, cur_dev, history)
         )
         if len(window):
             seq_array[i] = _compute_sequence(window.tail(seq_len), seq_len, target_lat, target_lon)
@@ -150,6 +202,7 @@ def _compute_static(
     target_lat: float,
     target_lon: float,
     cur_dev: float,
+    history: dict,
 ) -> dict:
     last_5 = window[window["event_time"] > t_ts - pd.Timedelta("5min")]
     last_15 = window[window["event_time"] > t_ts - pd.Timedelta("15min")]
@@ -176,11 +229,31 @@ def _compute_static(
     planned_time = float((row["target_time_begin"] - t_ts).total_seconds())
     planned_speed = (dist_to_target / planned_time) if planned_time > 0 else 0.0
 
+    speed_avg_5 = float(speeds_5.mean()) if len(speeds_5) else 0.0
+    speed_avg_15 = float(speeds_15.mean()) if len(speeds_15) else 0.0
+    # Тренд: положительный = ускоряется (за последние 5 мин быстрее, чем за 15),
+    # отрицательный = замедляется — сильный сигнал для residual.
+    speed_trend = speed_avg_5 - speed_avg_15
+    # Отклонение мгновенной скорости от плановой (dist/time до цели).
+    speed_vs_planned = last_speed - float(planned_speed)
+
+    # Циклическое кодирование времени — модели не приходится учить,
+    # что 23 и 0 близки (для дня недели: 6 и 0).
+    hour_rad = 2 * np.pi * t_ts.hour / 24.0
+    wday_rad = 2 * np.pi * t_ts.weekday() / 7.0
+
+    tr_id = row["tr_id"]
+    hour = int(t_ts.hour)
+    tr_delay_mean = history["tr_delay_mean"].get(tr_id, history["global_delay_mean"])
+    tr_delay_std = history["tr_delay_std"].get(tr_id, history["global_delay_std"])
+    tr_curdev_mean = history["tr_curdev_mean"].get(tr_id, history["global_curdev_mean"])
+    hour_delay_mean = history["hour_delay_mean"].get(hour, history["global_delay_mean"])
+
     return {
         "sample_id": row["sample_id"],
         "cur_dev_s": cur_dev,
-        "speed_avg_5min": float(speeds_5.mean()) if len(speeds_5) else 0.0,
-        "speed_avg_15min": float(speeds_15.mean()) if len(speeds_15) else 0.0,
+        "speed_avg_5min": speed_avg_5,
+        "speed_avg_15min": speed_avg_15,
         "std_speed_5min": float(speeds_5.std()) if len(speeds_5) > 1 else 0.0,
         "last_speed": last_speed,
         "last_heading": last_heading,
@@ -188,8 +261,16 @@ def _compute_static(
         "dist_to_target_m": dist_to_target,
         "planned_time_to_target_sec": planned_time,
         "planned_avg_speed_ms": float(planned_speed),
-        "hour_of_day": float(t_ts.hour),
-        "weekday": float(t_ts.weekday()),
+        "speed_trend": speed_trend,
+        "speed_vs_planned": speed_vs_planned,
+        "hour_sin": float(np.sin(hour_rad)),
+        "hour_cos": float(np.cos(hour_rad)),
+        "weekday_sin": float(np.sin(wday_rad)),
+        "weekday_cos": float(np.cos(wday_rad)),
+        "tr_hist_delay_mean": float(tr_delay_mean),
+        "tr_hist_delay_std": float(tr_delay_std),
+        "tr_hist_cur_dev_mean": float(tr_curdev_mean),
+        "hour_hist_delay_mean": float(hour_delay_mean),
     }
 
 

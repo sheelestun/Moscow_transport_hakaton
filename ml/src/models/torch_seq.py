@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader, Dataset
 # При реальном использовании передавайте фактические размеры через SeqDelayModel(...) явно.
 SEQ_LEN = 30
 SEQ_FEAT_DIM = 5
-STATIC_FEAT_DIM = 12
+STATIC_FEAT_DIM = 20
 
 
 class DelaySeqDataset(Dataset):

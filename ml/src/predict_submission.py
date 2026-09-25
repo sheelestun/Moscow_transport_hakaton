@@ -34,7 +34,12 @@ def model_predict(dataset_dir: Path, model_path: Path) -> tuple[pd.DataFrame, np
     ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
 
     points, traffic, schedule = load_split(dataset_dir, "validate")
-    static_df, seq_array = build_features(points, traffic, schedule, seq_len=ckpt["seq_len"])
+    history = ckpt.get("history")
+    if history is None:
+        print("[warn] в чекпоинте нет history — фичи tr_hist_* заполнятся глобальным средним")
+    static_df, seq_array = build_features(
+        points, traffic, schedule, seq_len=ckpt["seq_len"], history=history
+    )
     static_np = static_df.to_numpy(dtype=np.float32)
 
     ds = DelaySeqDataset(
