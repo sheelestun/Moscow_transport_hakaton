@@ -1,0 +1,114 @@
+# Moscow Transport Hackathon — оркестрация всех сервисов для локального запуска.
+# Запуск: docker compose up -d (эмулятор предварительно загрузить, см. секцию ndtp-emu).
+# Compose Specification (без устаревшего ключа `version`).
+
+networks:
+  # Единая сеть — все сервисы обращаются друг к другу по service-name.
+  msk:
+    driver: bridge
+
+volumes:
+  # Persistent-хранилище для Postgres (метаданные, логи предсказаний, справочники).
+  postgres-data:
+
+services:
+
+  ml:
+    # Наш инференс-сервис: FastAPI + CatBoost-ансамбль.
+    build: ./ml
+    container_name: msk-ml
+    ports:
+      - "8001:8001"
+    volumes:
+      # Модели монтируем read-only, чтобы можно было обновлять артефакты без rebuild.
+      - ./ml/artifacts:/app/artifacts:ro
+    environment:
+      ML_MODEL_VERSION: catboost-ensemble-v1
+    networks:
+      - msk
+    healthcheck:
+      # /health определён в ml/src/inference_service.py, curl уже в образе.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
+
+  backend:
+    # Плейсхолдер — реальный сервис пилит Даниил Герман (FastAPI:8000).
+    # Заменить image+command на build: ./backend когда появится Dockerfile.
+    image: python:3.12-slim
+    container_name: msk-backend
+    command: ["sh", "-c", "echo 'backend not implemented yet' && sleep infinity"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      # Без condition — плейсхолдер и так не поднимет healthcheck.
+      - ml
+      - redis
+      - postgres
+    networks:
+      - msk
+    healthcheck:
+      # Заглушка, чтобы docker compose не ругался при поднятии зависимых.
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    # SPA под nginx (см. frontend/Dockerfile). Внутри контейнера слушает 80.
+    build: ./frontend
+    container_name: msk-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - msk
+    restart: unless-stopped
+
+  redis:
+    # Шина realtime-событий + feature-store с TTL.
+    image: redis:7-alpine
+    container_name: msk-redis
+    # Порт наружу не пробрасываем — только внутри сети msk.
+    expose:
+      - "6379"
+    networks:
+      - msk
+    restart: unless-stopped
+
+  postgres:
+    # Метаданные, история предсказаний, справочники маршрутов/остановок.
+    image: postgres:16-alpine
+    container_name: msk-postgres
+    environment:
+      POSTGRES_USER: msk
+      POSTGRES_PASSWORD: msk
+      POSTGRES_DB: msk_transport
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - msk
+    restart: unless-stopped
+
+  # ВНИМАНИЕ: перед первым запуском загрузить образ эмулятора командой:
+  #   docker load -i dataset/ndtp-telemetry-emulator.tar
+  # Образ поставляется как OCI-архив, в Docker Hub его нет.
+  ndtp-emu:
+    # Java Spring Boot — эмулирует поток NDTP-телеметрии по TCP на targetHost:targetPort.
+    image: ndtp-telemetry-emulator:1.0
+    container_name: msk-ndtp-emu
+    ports:
+      # HTTP-управление: POST /api/config, GET /api/cells.
+      - "18080:18080"
+    depends_on:
+      - backend
+    networks:
+      - msk
+    restart: unless-stopped
