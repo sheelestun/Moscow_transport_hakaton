@@ -220,3 +220,6 @@ __marimo__/
 # Dataset (скачивается локально с Яндекс.Диска, в git не хранится)
 /dataset/*
 !/dataset/README.md
+
+# Сабмиты — генерируются ml/src/predict_submission.py, в git не храним
+/submission*.csv
