@@ -3,6 +3,7 @@
 Режимы:
   --baseline               prediction = cur_dev_s (score ≈ 0.40)
   --model <path.pt>        обученная sequence-модель из train.py (residual + cur_dev_s)
+  --catboost [dir]         ансамбль CatBoost из train_catboost.py (residual + cur_dev_s)
 
 Формат сабмита: sample_id;prediction, разделитель ';', CRLF (совпадает с sample_submission.csv).
 """
@@ -80,6 +81,25 @@ def model_predict(dataset_dir: Path, model_path: Path) -> tuple[pd.DataFrame, np
     return points, predictions
 
 
+def catboost_predict(dataset_dir: Path, art_dir: Path) -> tuple[pd.DataFrame, np.ndarray]:
+    """Ансамбль CatBoost из train_catboost.py (artifacts/catboost_seed*.cbm + catboost_meta.json)."""
+    import json
+
+    from catboost import CatBoostRegressor, Pool
+
+    from features.tabular import build_features, clone_sources, load_split
+
+    meta = json.loads((art_dir / "catboost_meta.json").read_text(encoding="utf-8"))
+    feats, cats = meta["features"], meta["cat_features"]
+    _, _, sched_train = load_split(dataset_dir, "train")
+    points, traffic, schedule = load_split(dataset_dir, "validate")
+    X = build_features(points, traffic, schedule, route_of=clone_sources(sched_train))
+    pool = Pool(X[feats], cat_features=cats)
+    models = [CatBoostRegressor().load_model(str(art_dir / f"catboost_seed{i}.cbm")) for i in range(meta["n_models"])]
+    resid = np.mean([m.predict(pool) for m in models], axis=0)
+    return points, resid + points["cur_dev_s"].fillna(0.0).to_numpy()
+
+
 def build_submission(points: pd.DataFrame, predictions: np.ndarray) -> pd.DataFrame:
     if len(points) != len(predictions):
         raise ValueError(f"размеры не совпадают: {len(points)} points vs {len(predictions)} predictions")
@@ -101,9 +121,14 @@ def main() -> None:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--baseline", action="store_true", help="Использовать бейзлайн cur_dev_s")
     mode.add_argument("--model", type=Path, help="Путь к чекпоинту .pt из train.py")
+    mode.add_argument("--catboost", type=Path, nargs="?", const=Path(__file__).resolve().parents[1] / "artifacts",
+                      help="Папка с моделями CatBoost из train_catboost.py (по умолчанию ml/artifacts)")
     args = ap.parse_args()
 
-    if args.baseline:
+    if args.catboost:
+        print(f"[catboost] {args.catboost}")
+        points, predictions = catboost_predict(args.dataset, args.catboost)
+    elif args.baseline:
         points_path = args.dataset / "validate" / "points.csv"
         points = pd.read_csv(points_path)
         print(f"загружено точек: {len(points)} из {points_path}")
