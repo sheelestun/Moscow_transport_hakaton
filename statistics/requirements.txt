@@ -1,0 +1,5 @@
+# Versions used to generate the committed report (Python 3.12+).
+numpy==2.2.6
+pandas==2.3.3
+matplotlib==3.10.6
+scipy==1.16.2
