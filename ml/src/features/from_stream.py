@@ -50,13 +50,14 @@ def build_features_online(
             raise ValueError(f"sample: обязательное поле '{k}' отсутствует")
 
     points_df = pd.DataFrame([{k: sample[k] for k in REQUIRED_SAMPLE_KEYS}])
-    points_df["T"] = pd.to_datetime(points_df["T"])
-    points_df["target_time_begin"] = pd.to_datetime(points_df["target_time_begin"])
+    points_df["T"] = pd.to_datetime(points_df["T"], format="ISO8601")
+    points_df["target_time_begin"] = pd.to_datetime(points_df["target_time_begin"], format="ISO8601")
 
     traffic_df = pd.DataFrame(list(telemetry))
     if traffic_df.empty:
         traffic_df = pd.DataFrame(columns=list(REQUIRED_TELEMETRY_COLS))
-    traffic_df["event_time"] = pd.to_datetime(traffic_df["event_time"])
+    # ISO8601: в одном буфере бывают метки с микросекундами и без — без format pandas падает
+    traffic_df["event_time"] = pd.to_datetime(traffic_df["event_time"], format="ISO8601")
     for col in REQUIRED_TELEMETRY_COLS:
         if col not in traffic_df.columns:
             traffic_df[col] = None
@@ -64,7 +65,7 @@ def build_features_online(
     schedule_df = pd.DataFrame(list(schedule))
     if schedule_df.empty:
         raise ValueError("schedule пустой — features/from_stream не может построить план")
-    schedule_df["time_begin"] = pd.to_datetime(schedule_df["time_begin"])
+    schedule_df["time_begin"] = pd.to_datetime(schedule_df["time_begin"], format="ISO8601")
     for col in REQUIRED_SCHEDULE_COLS:
         if col not in schedule_df.columns:
             schedule_df[col] = None
