@@ -52,7 +52,8 @@ STALE_AFTER_S = 180  # нет свежих координат дольше — �
 OFF_ROUTE_M = 3000   # ТС дальше от всех своих остановок (план ±1 ч) — позиция «не на маршруте» (~4% реальных точек:
                      # стоянка в парке перед рейсом; у случайных координат эмулятора — почти всегда)
 HORIZON_S = (600, 900)  # прогноз по условию: первая остановка с планом в (T+10 мин, T+15 мин]
-MAE_TARGET = 78.0    # оценка по условию «бейзлайн даёт score 0.40» (см. train_catboost.mae_target_estimate)
+MAE_TARGET_FALLBACK = 78.0  # запасное значение, если в артефактах нет mae_target_estimate
+MAE_TARGET = MAE_TARGET_FALLBACK  # текущее значение — при старте перезаписывается из catboost_metrics.json
 
 # What-if — эвристические сдвиги задержки (секунды), не выученные моделью; для дашборда это «оценка сценария».
 WHATIF_DELTA_MAP: dict[str, float] = {
@@ -261,26 +262,37 @@ def _read_mae_cohort_all(csv_path: Path, mae_col: str) -> dict[str, Optional[flo
 
 
 def _load_metrics() -> dict:
-    """Витринные метрики: свежие из ``train_catboost --eval`` поверх CSV из statistics/tables."""
+    """Витринные метрики: свежие из ``train_catboost --eval`` поверх CSV из statistics/tables.
+
+    Побочный эффект: обновляет глобальный ``MAE_TARGET`` из ``mae_target_estimate``
+    в свежем артефакте — так формула score использует калиброванное значение,
+    а не хардкод 78 с.
+    """
+    global MAE_TARGET
     m: dict = {"validation": {}}
     model_mae = _read_mae_cohort_all(STATS_DIR / "model_metrics.csv", "mae_model_s")
     base_mae = _read_mae_cohort_all(STATS_DIR / "baseline_metrics.csv", "mae_zero_s")
     m.update(mae_train_s=model_mae["train"], mae_test_s=model_mae["test"],
              mae_baseline_train_s=base_mae["train"], mae_baseline_test_s=base_mae["test"], score_estimate=None)
+    mae_target = MAE_TARGET_FALLBACK
     fresh = ARTIFACTS_DIR / "catboost_metrics.json"
     if fresh.exists():
         v = json.loads(fresh.read_text())
         m["validation"] = v
         m["mae_test_s"] = v.get("holdout_mae", m["mae_test_s"])
+        if isinstance(v.get("mae_target_estimate"), (int, float)) and v["mae_target_estimate"] > 0:
+            mae_target = float(v["mae_target_estimate"])
         # в контейнере нет statistics/tables: mae_zero берём из метрик модели (или выводим из оценки MAE_TARGET)
         if m["mae_baseline_test_s"] is None:
             mz = v.get("holdout_zero_mae")
             if mz is None and {"holdout_baseline_mae", "mae_target_estimate"} <= v.keys():
                 mz = (v["holdout_baseline_mae"] - 0.4 * v["mae_target_estimate"]) / 0.6  # score(бейзлайн) = 0.40
             m["mae_baseline_test_s"] = mz
+    MAE_TARGET = mae_target
+    m["mae_target_s"] = mae_target
     mae, mae_zero = m["mae_test_s"], m["mae_baseline_test_s"]
-    if mae is not None and mae_zero is not None and mae_zero > MAE_TARGET:
-        m["score_estimate"] = float(max(0.0, min(1.0, (mae_zero - mae) / (mae_zero - MAE_TARGET))))
+    if mae is not None and mae_zero is not None and mae_zero > mae_target:
+        m["score_estimate"] = float(max(0.0, min(1.0, (mae_zero - mae) / (mae_zero - mae_target))))
     return m
 
 

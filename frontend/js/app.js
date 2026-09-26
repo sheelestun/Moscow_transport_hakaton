@@ -14,6 +14,7 @@ window.App = window.App || {};
     acked: new Set(),    // алерты, которые диспетчер отметил «Принято»
     whatif: new Map(),   // vehicle_id -> последний результат What-if
     selectedId: null,    // выбранное ТС
+    selectedToken: 0,    // растёт при каждой смене selectedId — ловим устаревшие ответы fetch
     schedule: null,      // расписание выбранного ТС
     status: "connecting",
     lastUpdate: null,
@@ -105,6 +106,52 @@ window.App = window.App || {};
     App.map.setRouteLevels(Object.fromEntries(stats.map((s) => [s.route_id, s.level])));
   }
 
+  async function renderWorstStops() {
+    if (!source.getWorstStops) return;
+    const el = $("worst-stops");
+    if (!el) return;
+    try {
+      const stops = await source.getWorstStops(10);
+      if (!stops || !stops.length) {
+        el.innerHTML = `<li class="empty empty--muted">Проблемных точек не найдено.</li>`;
+        return;
+      }
+      el.innerHTML = stops.map((s) => {
+        const level = App.delayLevel ? App.delayLevel(s.avg_delay_sec) : (s.avg_delay_sec >= 180 ? "red" : "yellow");
+        return `<li class="worst-stop">
+          <span class="worst-stop__delay t-${level}">+${Math.round(s.avg_delay_sec)}с</span>
+          <span class="worst-stop__body">
+            <b>${App.esc(s.name)}</b>
+            <span class="muted">${App.esc(s.route_id)} · ${s.vehicles} ТС · пик ${Math.round(s.max_delay_sec)}с</span>
+          </span>
+        </li>`;
+      }).join("");
+    } catch {
+      el.hidden = true;
+    }
+  }
+
+  function renderHourlyHeatmap() {
+    const el = $("heatmap");
+    if (!el || !App.HOURLY_STATS) return;
+    const values = Object.values(App.HOURLY_STATS).map((h) => h.mae).filter((v) => Number.isFinite(v));
+    if (!values.length) { el.hidden = true; return; }
+    const min = Math.min(...values), max = Math.max(...values);
+    const nowHour = new Date().getHours();
+    const cells = Object.entries(App.HOURLY_STATS).map(([h, s]) => {
+      const hasData = Number.isFinite(s.mae);
+      const t = hasData ? Math.max(0, Math.min(1, (s.mae - min) / (max - min || 1))) : 0;
+      const alpha = hasData ? 0.15 + 0.75 * t : 0.05;
+      const isNow = Number(h) === nowHour;
+      const label = hasData ? `${Math.round(s.mae)}с` : "—";
+      const tip = hasData
+        ? `${h}:00 — среднее опоздание ${s.mae}с (n=${s.points})`
+        : `${h}:00 — данных нет`;
+      return `<div class="heat-cell ${isNow ? "heat-cell--now" : ""}" title="${tip}" style="background:rgba(255,90,82,${alpha.toFixed(2)})"><b>${h}</b><i>${label}</i></div>`;
+    }).join("");
+    el.innerHTML = cells;
+  }
+
   function renderVehicle() {
     if (!state.selectedId) return;
     const v = state.vehicles.get(state.selectedId);
@@ -122,6 +169,7 @@ window.App = window.App || {};
     const v = state.vehicles.get(id);
     if (!v) return;
     state.selectedId = id;
+    state.selectedToken += 1;
     state.schedule = null;
     const route = state.routes.get(v.route_id);
 
@@ -161,12 +209,16 @@ window.App = window.App || {};
   async function refreshSchedule() {
     const id = state.selectedId;
     if (!id) return;
+    // Токен фиксируем ДО фетча — если за время запроса пользователь переключил ТС
+    // (даже на то же самое, но с промежуточным clearSelection), поймаем это.
+    const token = state.selectedToken;
     try {
       const sch = await source.getSchedule(id);
-      if (state.selectedId !== id) return; // пока грузили — выбрали другое ТС
+      if (state.selectedToken !== token || state.selectedId !== id) return;
       const first = !state.schedule;
       state.schedule = sch;
       const v = state.vehicles.get(id);
+      if (!v) return; // ТС исчезло из state.vehicles между запросом и ответом
       if (first) App.map.select(v, state.routes.get(v.route_id), sch);
       else App.map.updateSelection(v, state.routes.get(v.route_id), sch);
       renderVehicle();
@@ -177,6 +229,7 @@ window.App = window.App || {};
 
   function clearSelection() {
     state.selectedId = null;
+    state.selectedToken += 1;
     state.schedule = null;
     App.sidebar.closeVehicle();
     App.map.clearSelection();
@@ -333,10 +386,45 @@ window.App = window.App || {};
 
   // ---------- «Сбылись ли прогнозы» ----------
   const HIT_SEC = 90; // прогноз считаем сбывшимся, если ошибка не больше 1,5 минуты
+  const CSV_HEADERS = ["alert_id", "route_id", "vehicle_id", "target_stop_id", "target_stop_name",
+                       "eta_incident", "delay_pred_sec", "delay_fact_sec", "measure", "measure_at"];
+  function csvEscape(v) {
+    if (v == null) return "";
+    const s = String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  function verifiedToCsv(list) {
+    const rows = [CSV_HEADERS.join(",")];
+    for (const v of list) {
+      rows.push(CSV_HEADERS.map((h) => {
+        if (h === "measure") return csvEscape(v.measure && v.measure.scenario);
+        if (h === "measure_at") return csvEscape(v.measure && v.measure.at);
+        return csvEscape(v[h]);
+      }).join(","));
+    }
+    return rows.join("\r\n");
+  }
+  function downloadVerifiedCsv() {
+    const list = state.verified.filter((v) => isVisible(v.route_id));
+    if (!list.length) return;
+    // BOM для корректной кодировки в Excel; RFC 4180 line endings.
+    const blob = new Blob(["﻿" + verifiedToCsv(list)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `verified-${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
   function renderVerified() {
     const list = state.verified.filter((v) => isVisible(v.route_id));
     const plain = list.filter((v) => !v.measure);
     const hits = plain.filter((v) => Math.abs(v.delay_fact_sec - v.delay_pred_sec) <= HIT_SEC).length;
+    const dl = $("verified-download");
+    if (dl) dl.hidden = list.length === 0;
     $("verified-score").innerHTML = plain.length
       ? `Точность за смену: <b class="${hits / plain.length >= 0.7 ? "t-green" : "t-yellow"}">${Math.round((hits / plain.length) * 100)}%</b> — сбылось ${hits} из ${plain.length} (ошибка до 1,5 мин)`
       : "Когда наступает время инцидента, сверяем прогноз с фактом.";
@@ -559,6 +647,8 @@ window.App = window.App || {};
     App.map.setRiskMode($("risk-toggle").checked);
     initLinesMenu();
     initHorizonToggle();
+    const dl = $("verified-download");
+    if (dl) dl.onclick = downloadVerifiedCsv;
 
     // Кнопка «Обрыв связи» — только в демо-режиме
     if (source.setOffline) {
@@ -580,8 +670,14 @@ window.App = window.App || {};
     try {
       const [routes, vehicles, alerts] = await Promise.all([source.getRoutes(), source.getVehicles(), source.getAlerts()]);
       routes.forEach((r) => state.routes.set(r.route_id, r));
-      // выбранные ранее линии, которых больше нет, — забываем
-      if (state.lines) state.lines = new Set([...state.lines].filter((id) => state.routes.has(id)));
+      // выбранные ранее линии, которых больше нет, — забываем и чистим localStorage,
+      // иначе после переименования route_id в бэкенде дашборд остаётся с пустой выборкой навсегда.
+      if (state.lines) {
+        const before = state.lines.size;
+        const filtered = new Set([...state.lines].filter((id) => state.routes.has(id)));
+        state.lines = filtered.size === 0 ? null : filtered;
+        if (before !== (state.lines ? state.lines.size : 0)) saveLines();
+      }
       App.map.setVisibleRoutes(state.lines);
       App.map.drawRoutes(routes);
       renderLinesMenu();
@@ -595,10 +691,14 @@ window.App = window.App || {};
 
     source.getMetrics()
       .then((m) => {
-        // ML-сервис отдаёт mae_test_s / latency_ms_p50; поддерживаем и старые имена
-        const mae = m.mae_test_s ?? m.mae_sec;
-        const lat = m.latency_ms_p95 ?? m.p95_latency_ms ?? m.latency_ms_p50;
-        const latName = m.latency_ms_p95 ?? m.p95_latency_ms ? "p95" : "p50";
+        if (!m || typeof m !== "object") return;
+        // ML-сервис отдаёт mae_test_s / latency_ms_p50; поддерживаем и старые имена.
+        // Filter выкидывает null/undefined/NaN — иначе в UI появляется "NaN с".
+        const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+        const mae = num(m.mae_test_s) ?? num(m.mae_sec);
+        const p95 = num(m.latency_ms_p95) ?? num(m.p95_latency_ms);
+        const lat = p95 ?? num(m.latency_ms_p50);
+        const latName = p95 != null ? "p95" : "p50";
         const parts = [];
         if (mae != null) parts.push(`MAE <b>${Math.round(mae)} с</b>`);
         if (lat != null) parts.push(`${latName} <b>${Math.round(lat)} мс</b>`);
@@ -608,6 +708,8 @@ window.App = window.App || {};
 
     renderList();
     renderRoutes();
+    renderHourlyHeatmap();
+    renderWorstStops();
     source.start(handlers);
 
     setInterval(renderRoutes, 2000);            // светофор маршрутов
@@ -616,6 +718,8 @@ window.App = window.App || {};
     setInterval(refreshSchedule, 2000);         // расписание выбранного ТС
     setInterval(() => !state.selectedId && renderList(), 15000); // «через N мин» в списке
     setInterval(() => state.status === "degraded" && renderStatus(), 5000);
+    setInterval(renderHourlyHeatmap, 60_000);   // подсветка «текущего часа» раз в минуту
+    setInterval(renderWorstStops, 10_000);      // проблемные остановки — быстро реагируем на события
   }
 
   App.state = state; // для отладки в консоли браузера

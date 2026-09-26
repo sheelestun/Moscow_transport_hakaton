@@ -107,13 +107,25 @@
         <p class="alerts-hidden" id="alerts-hidden" hidden></p>
 
         <div class="panel__head panel__head--sub">
-          <h3>Сбылись ли прогнозы</h3>
+          <h3>Сбылись ли прогнозы
+            <button class="link link--muted verified__download" id="verified-download" hidden title="Выгрузить сверенные прогнозы в CSV">⬇ CSV</button>
+          </h3>
           <p class="muted" id="verified-score">Когда наступает время инцидента, сверяем прогноз с фактом.</p>
         </div>
         <ul class="verified" id="verified"></ul>
 
         <div class="panel__head panel__head--sub"><h3>Маршруты</h3></div>
         <ul class="routes" id="routes"></ul>
+
+        <div class="panel__head panel__head--sub"><h3>Опоздания по часам</h3>
+          <p class="muted">Среднее опоздание (сек) в это время суток по обучающим данным. Тёмные ячейки — часы риска.</p>
+        </div>
+        <div class="heatmap" id="heatmap"></div>
+
+        <div class="panel__head panel__head--sub"><h3>Проблемные остановки</h3>
+          <p class="muted">Топ-10 по прогнозируемой задержке в ближайшие 15 минут.</p>
+        </div>
+        <ul class="worst-stops" id="worst-stops"></ul>
       </div>
       <div id="view-vehicle" hidden></div>
     </aside>
@@ -146,6 +158,7 @@
   <script src="js/geo.js?v=2026092601"></script>
   <script src="js/mock-routes.js?v=2026092601"></script>
   <script src="js/mock-signals.js?v=2026092601"></script>
+  <script src="js/hourly-stats.js?v=2026092601"></script>
   <script src="js/mock.js?v=2026092601"></script>
   <script src="js/api.js?v=2026092601"></script>
   <script src="js/basemap.js?v=2026092601"></script>

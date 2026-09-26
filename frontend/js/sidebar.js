@@ -101,8 +101,10 @@ window.App = window.App || {};
             </div>
             <span class="level level--${level}">${App.levelName[level]}</span>
           </div>
+          ${dataStatusHtml(v.data_status)}
           <div class="hero__label">Прогноз через 10–15 минут</div>
-          <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}</div>
+          <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}${intervalHtml(v.delay_interval_sec, v.delay_pred_sec)}</div>
+          ${probabilitiesHtml(v)}
           ${whereName ? `<div class="hero__where">к остановке «${App.esc(whereName)}» · ${App.fmtTime(whereTime)} (${App.fmtIn(whereTime)})</div>` : ""}
           ${problemHtml(schedule, level)}
           ${v.waiting_signal && v.waiting_signal.waited_sec >= 2 ? `<div class="waiting"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>
@@ -156,6 +158,43 @@ window.App = window.App || {};
       $("vh-sched").innerHTML = schedule ? scheduleHtml(schedule) : `<h4>Расписание</h4><p class="muted">Загружаем…</p>`;
     },
   };
+
+  // Бейдж качества данных: скрываем при "live" (тишина = ОК), выделяем прочие статусы
+  const DATA_STATUS = {
+    stale: { cls: "warn", text: "Данные устарели — прогноз держится на последнем известном состоянии" },
+    off_route: { cls: "warn", text: "ТС ушло с трассы маршрута — прогноз возможно неточен" },
+    no_telemetry: { cls: "bad", text: "Нет телеметрии — показано последнее состояние" },
+    fallback: { cls: "bad", text: "Модель на fallback: baseline вместо полной ML" },
+  };
+  function dataStatusHtml(status) {
+    const cfg = DATA_STATUS[status];
+    if (!cfg) return "";
+    return `<div class="hero__data-status hero__data-status--${cfg.cls}">${cfg.text}</div>`;
+  }
+
+  // 80% доверительный интервал прогноза: показываем в виде "±Xс (80%)" рядом с большой цифрой
+  function intervalHtml(interval, mean) {
+    if (!Array.isArray(interval) || interval.length !== 2) return "";
+    const [lo, hi] = interval;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return "";
+    const margin = Math.round((hi - lo) / 2);
+    if (margin <= 0) return "";
+    return `<span class="hero__interval" title="80% доверительный интервал прогноза">±${margin}с (80%)</span>`;
+  }
+
+  // Вероятности исходов: раньше / в срок / позже
+  function probabilitiesHtml(v) {
+    const parts = [
+      { key: "p_early", label: "Раньше", cls: "early" },
+      { key: "p_ontime", label: "В срок", cls: "ontime" },
+      { key: "p_late", label: "Позже", cls: "late" },
+    ];
+    const hasAny = parts.some((p) => Number.isFinite(v[p.key]));
+    if (!hasAny) return "";
+    return `<div class="hero__probs">
+      ${parts.map((p) => `<span class="prob prob--${p.cls}"><i>${App.pct(v[p.key] || 0)}</i><em>${p.label}</em></span>`).join("")}
+    </div>`;
+  }
 
   // Проблемный участок: перегон до целевой остановки, где опоздание растёт сильнее всего
   function problemSegment(sch) {

@@ -1,11 +1,12 @@
 """Симулятор движения ТС по маршрутам — Python-порт логики frontend/js/mock.js.
 
-Держит N ТС на каждом маршруте, двигает их по polyline с плановой скоростью
-+ случайные проблемы (пробки, долгие простои, обрыв интервала). Каждый тик
-обновляет позиции, `delay_now_sec` и производные `delay_pred_sec` / `risk_score`.
-
-Прогнозы формируем локально по эвристике; когда доступен ML-сервис — вызывающая
-сторона может подменить `delay_pred_sec` реальным ответом от /predict.
+Держит N ТС на каждом маршруте. У маршрута — 1..2 направления с собственной
+трассой (``line``) и остановками (``stops``); маршрут «Б» — кольцевой (одно
+направление, ТС продолжает по кругу). Каждый тик: сдвигаем позицию по трассе,
+пересчитываем ``delay_now_sec``, ``delay_pred_sec``, ``risk_score`` и
+диагностические поля (``data_status``, ``p_early/p_ontime/p_late``,
+``delay_interval_sec``, ``horizon_ok``). Локальный прогноз — фолбэк на случай,
+когда ML недоступен; при доступности бэкенд может подменить его ответом ML.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from routes_data import ROUTES
+from routes_data import ROUTES, SIGNALS
 
 
 PLAN_SPEED_MPS = 18 / 3.6  # 5 м/с — средняя плановая скорость с учётом остановок
@@ -55,39 +56,15 @@ def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 @dataclass
-class RouteRuntime:
-    """Маршрут с посчитанными кумулятивными расстояниями и остановками с pos_m."""
-    route_id: str
-    transport_type: str
+class DirectionRuntime:
+    """Одно направление маршрута: линия + остановки, спроецированные на pos_m."""
+    direction_id: int
     name: str
+    osm_name: str
     line: list[list[float]]
     stops: list[dict]
     cum_m: list[float]
     length_m: float
-
-    @classmethod
-    def build(cls, raw: dict) -> "RouteRuntime":
-        line = raw["line"]
-        cum = [0.0]
-        for i in range(1, len(line)):
-            cum.append(cum[-1] + haversine_m(line[i - 1], line[i]))
-        # проецируем каждую остановку на ближайший сегмент линии → pos_m
-        stops_out: list[dict] = []
-        for idx, s in enumerate(raw["stops"]):
-            name, lat, lon = s[0], s[1], s[2]
-            pos_m = _project(line, cum, (lat, lon))
-            stops_out.append({
-                "stop_id": f"{raw['route_id']}-{idx + 1}",
-                "name": name,
-                "lat": lat,
-                "lon": lon,
-                "pos_m": pos_m,
-            })
-        stops_out.sort(key=lambda x: x["pos_m"])
-        return cls(
-            route_id=raw["route_id"], transport_type=raw["transport_type"], name=raw["name"],
-            line=line, stops=stops_out, cum_m=cum, length_m=cum[-1],
-        )
 
     def point_at(self, pos_m: float) -> tuple[float, float]:
         pos_m = max(0.0, min(pos_m, self.length_m))
@@ -99,6 +76,76 @@ class RouteRuntime:
                 return a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
         last = self.line[-1]
         return last[0], last[1]
+
+
+@dataclass
+class SignalRuntime:
+    """Светофор с фиксированным циклом/фазой (детерминированный сид от координат).
+
+    Реальные фазы у ЦОДД — при промышленном внедрении подставляются оттуда.
+    """
+    signal_id: str
+    lat: float
+    lon: float
+    cycle: float
+    green: float
+    offset: float
+
+
+@dataclass
+class RouteRuntime:
+    """Маршрут с посчитанными направлениями и метаданными."""
+    route_id: str
+    transport_type: str
+    name: str
+    loop: bool
+    dirs: list[DirectionRuntime]
+    signals: list[SignalRuntime]
+    _priority_until_ms: int = 0  # включён «signal_priority» для маршрута до этого времени
+
+    @classmethod
+    def build(cls, raw: dict, signals: list[list[float]] | None = None) -> "RouteRuntime":
+        dirs_out: list[DirectionRuntime] = []
+        for i, d in enumerate(raw["dirs"]):
+            line = d["line"]
+            cum = [0.0]
+            for j in range(1, len(line)):
+                cum.append(cum[-1] + haversine_m(line[j - 1], line[j]))
+            stops_out: list[dict] = []
+            for idx, s in enumerate(d["stops"]):
+                name, lat, lon = s[0], s[1], s[2]
+                pos_m = _project(line, cum, (lat, lon))
+                stops_out.append({
+                    "stop_id": f"{raw['route_id']}-{i}-{idx + 1}",
+                    "name": name,
+                    "lat": lat,
+                    "lon": lon,
+                    "pos_m": pos_m,
+                })
+            stops_out.sort(key=lambda x: x["pos_m"])
+            # имя направления: «X → Y» из первой и последней остановки
+            dir_name = d.get("name") or (
+                f"{stops_out[0]['name']} → {stops_out[-1]['name']}"
+                if stops_out else raw["route_id"]
+            )
+            dirs_out.append(DirectionRuntime(
+                direction_id=i, name=dir_name, osm_name=d.get("osm_name", ""),
+                line=line, stops=stops_out, cum_m=cum, length_m=cum[-1],
+            ))
+        sig_runtime: list[SignalRuntime] = []
+        for i, (lat, lon) in enumerate(signals or []):
+            seed = abs(math.sin((lat * 1e4 + lon * 1e4) * 12.9898)) * 1000
+            cycle = 80 + (seed % 20)
+            green = cycle * (0.6 + (seed % 12) / 100)
+            offset = seed % cycle
+            sig_runtime.append(SignalRuntime(
+                signal_id=f"{raw['route_id']}-s{i + 1}", lat=lat, lon=lon,
+                cycle=cycle, green=green, offset=offset,
+            ))
+        return cls(
+            route_id=raw["route_id"], transport_type=raw["transport_type"], name=raw["name"],
+            loop=bool(raw.get("loop", False)), dirs=dirs_out, signals=sig_runtime,
+        )
 
 
 def _project(line: list[list[float]], cum: list[float], pt: tuple[float, float]) -> float:
@@ -126,11 +173,11 @@ def _project(line: list[list[float]], cum: list[float], pt: tuple[float, float])
 class Vehicle:
     vehicle_id: str
     route_id: str
-    direction: int          # +1 или -1
-    pos_m: float
+    direction_id: int        # индекс в dirs
+    pos_m: float             # 0..dirs[direction_id].length_m, только вперёд
     speed_kmh: float
     speed_avg: float
-    anchor_ms: int          # ms эпохи для начала рейса (плановое время в точке 0)
+    anchor_ms: int           # ms эпохи для начала рейса (плановое время в точке 0)
     trip_id: int
     trouble_left_s: float = 0.0
     trouble_speed_kmh: float = 12.0
@@ -150,10 +197,13 @@ class Vehicle:
     last_trip: Optional[dict] = None
     alerted_stops: set[str] = field(default_factory=set)
     alerted_trip: int = -1
-
-
-def _along(v: Vehicle, r: RouteRuntime, pos_m: float) -> float:
-    return pos_m if v.direction > 0 else r.length_m - pos_m
+    # диагностика/интервал (мокируются симулятором, при live-ML заменяются реальными)
+    data_status: str = "live"       # live | stale | off_route | no_telemetry | fallback
+    off_route_m: Optional[float] = None
+    p_early: float = 0.0
+    p_ontime: float = 1.0
+    p_late: float = 0.0
+    delay_interval_sec: Optional[list[int]] = None  # [q10, q90] с 80%-покрытием
 
 
 def _plan_time_ms(v: Vehicle, along_m: float) -> float:
@@ -174,7 +224,7 @@ class Simulator:
         random.seed(seed)
         self.routes: dict[str, RouteRuntime] = {}
         for raw in ROUTES:
-            r = RouteRuntime.build(raw)
+            r = RouteRuntime.build(raw, signals=SIGNALS.get(raw["route_id"], []))
             self.routes[r.route_id] = r
         self.vehicles: list[Vehicle] = []
         self.by_id: dict[str, Vehicle] = {}
@@ -190,11 +240,15 @@ class Simulator:
     def _init_fleet(self) -> None:
         for r in self.routes.values():
             for i in range(4):
-                pos = r.length_m * (i + random.uniform(0.15, 0.7)) / 4
+                d_idx = i % len(r.dirs)
+                d = r.dirs[d_idx]
+                pos = d.length_m * ((i // max(1, len(r.dirs))) + random.uniform(0.15, 0.8)) / max(
+                    1, (4 + len(r.dirs) - 1) // len(r.dirs))
+                pos = max(0.0, min(pos, d.length_m * 0.98))
                 v = Vehicle(
                     vehicle_id=str(random.randint(120000, 139999)),
                     route_id=r.route_id,
-                    direction=-1 if i % 2 else 1,
+                    direction_id=d_idx,
                     pos_m=pos,
                     speed_kmh=random.uniform(17, 22),
                     speed_avg=18.0,
@@ -207,7 +261,7 @@ class Simulator:
                 self.vehicles.append(v)
                 self.by_id[v.vehicle_id] = v
         # несколько ТС «в проблеме» с первой секунды
-        for idx, k in enumerate((1, 5, 9, 13)):
+        for idx, k in enumerate((1, 5, 9, 13, 17)):
             if k < len(self.vehicles):
                 v = self.vehicles[k]
                 self._new_trip(v, delay_s=random.uniform(110, 170))
@@ -215,15 +269,15 @@ class Simulator:
                 v.trouble_left_s = random.uniform(300, 700)
 
     def _new_trip(self, v: Vehicle, delay_s: float) -> None:
-        r = self.routes[v.route_id]
+        d = self._dir(v)
         if v.facts:
             v.last_trip = {"trip_id": v.trip_id, "facts": dict(v.facts),
-                           "anchor_ms": v.anchor_ms, "direction": -v.direction}
+                           "anchor_ms": v.anchor_ms, "direction_id": v.direction_id}
         self._trip_seq += 1
         v.trip_id = self._trip_seq
         v.noise = random.uniform(-40, 40)
         v.facts = {}
-        v.anchor_ms = int(self._sim_now_ms - delay_s * 1000 - (_along(v, r, v.pos_m) / PLAN_SPEED_MPS) * 1000)
+        v.anchor_ms = int(self._sim_now_ms - delay_s * 1000 - (v.pos_m / PLAN_SPEED_MPS) * 1000)
 
     def _start_trouble(self, v: Vehicle, strength: float = 1.0) -> None:
         v.trouble_left_s = random.uniform(240, 720)
@@ -233,6 +287,9 @@ class Simulator:
         v.features = _make_features(v.reason)
         v.confidence = round(random.uniform(0.62, 0.90), 2)
 
+    def _dir(self, v: Vehicle) -> DirectionRuntime:
+        return self.routes[v.route_id].dirs[v.direction_id]
+
     # ---------- симуляция ----------
 
     def step(self, dt_s: float) -> None:
@@ -240,6 +297,7 @@ class Simulator:
         now_ms = self._sim_now_ms
         for v in self.vehicles:
             r = self.routes[v.route_id]
+            d = self._dir(v)
             if v.trouble_left_s > 0:
                 v.trouble_left_s -= dt_s
                 v.speed_kmh = max(2.0, min(14.0, v.trouble_speed_kmh + random.uniform(-1.5, 1.5)))
@@ -247,7 +305,6 @@ class Simulator:
                 if v.reason != "accumulated_delay":
                     v.reason = "accumulated_delay"
                     v.features = _make_features(v.reason)
-                # шанс новой проблемы (нормированный на реальное время)
                 p = 0.001 * math.sqrt(self.speed_factor / 5.0) * dt_s / max(self.speed_factor, 0.5)
                 if random.random() < p:
                     self._start_trouble(v)
@@ -257,26 +314,31 @@ class Simulator:
             v.speed_avg += (v.speed_kmh - v.speed_avg) * 0.08 * dt_s
 
             if v.recover_left_s > 0:
-                d = min(v.recover_left_s, 1.2 * dt_s)
-                v.anchor_ms += int(d * 1000)
-                v.recover_left_s -= d
+                dd = min(v.recover_left_s, 1.2 * dt_s)
+                v.anchor_ms += int(dd * 1000)
+                v.recover_left_s -= dd
 
-            before = _along(v, r, v.pos_m)
-            v.pos_m = max(0.0, min(r.length_m, v.pos_m + v.direction * (v.speed_kmh / 3.6) * dt_s))
-            after = _along(v, r, v.pos_m)
-            for s in r.stops:
-                d = _along(v, r, s["pos_m"])
-                if before < d <= after + 0.5:
+            before = v.pos_m
+            v.pos_m = min(d.length_m, v.pos_m + (v.speed_kmh / 3.6) * dt_s)
+            after = v.pos_m
+            for s in d.stops:
+                if before < s["pos_m"] <= after + 0.5:
                     v.facts[s["stop_id"]] = now_ms
-            if v.pos_m >= r.length_m or v.pos_m <= 0:
-                v.direction *= -1
+            if v.pos_m >= d.length_m:
+                # конец направления: у кольцевого — тот же, у 2-дир — следующее
+                v.direction_id = (v.direction_id + 1) % len(r.dirs)
+                v.pos_m = 0.0
                 self._new_trip(v, delay_s=random.uniform(-30, 60))
 
-            v.lat, v.lon = r.point_at(v.pos_m)
-            v.delay_now_s = (now_ms - _plan_time_ms(v, _along(v, r, v.pos_m))) / 1000
+            d = self._dir(v)
+            v.lat, v.lon = d.point_at(v.pos_m)
+            v.delay_now_s = (now_ms - _plan_time_ms(v, v.pos_m)) / 1000
             v.delay_pred_s = int(max(-300, min(900, self._predict_delay(v, HORIZON_S))))
             v.risk_score = round(risk_from_delay(v.delay_pred_s), 3)
             v.updated_at = _iso_ms(now_ms)
+
+            # диагностика: p_early/ontime/late, интервал ±90 с (мок)
+            self._update_uncertainty(v)
 
     def _future_delay(self, v: Vehicle, t: float) -> float:
         d = v.delay_now_s
@@ -298,30 +360,97 @@ class Simulator:
         """Локальный прогноз с шумом (как у настоящей модели MAE~40-60 с)."""
         return self._future_delay(v, t) + v.noise * min(1.0, t / HORIZON_S)
 
+    def _update_uncertainty(self, v: Vehicle) -> None:
+        """Моделирует то, что настоящая ML отдаёт как p_early/ontime/late + интервал.
+
+        Классы: early ≤ −60с, ontime (−60..+120с), late > +120с. Ширина интервала
+        зависит от confidence: чем ниже — тем шире (пропорция ±90с при conf=0.7).
+        """
+        d = float(v.delay_pred_s)
+        margin = round(90 * (1.2 - min(1.0, max(0.3, v.confidence))))
+        v.delay_interval_sec = [int(d - margin), int(d + margin)]
+        # softmax-подобная раскладка вероятностей вокруг центра
+        p_late = 1.0 / (1.0 + math.exp(-(d - 120) / 60))
+        p_early = 1.0 / (1.0 + math.exp(-(-60 - d) / 60))
+        p_ontime = max(0.0, 1.0 - p_late - p_early)
+        s = p_late + p_early + p_ontime
+        v.p_late = round(p_late / s, 3)
+        v.p_early = round(p_early / s, 3)
+        v.p_ontime = round(p_ontime / s, 3)
+        # data_status: у ТС с проблемой ниже уверенность — иногда «stale»
+        if v.confidence < 0.5:
+            v.data_status = "stale"
+        else:
+            v.data_status = "live"
+        v.off_route_m = None  # симуляция всегда на маршруте
+
     # ---------- публичные вьюхи ----------
 
     def get_routes(self) -> list[dict]:
-        return [{
-            "route_id": r.route_id, "name": r.name, "transport_type": r.transport_type,
-            "geometry": r.line,
-            "stops": [{"stop_id": s["stop_id"], "name": s["name"], "lat": s["lat"], "lon": s["lon"]}
-                      for s in r.stops],
-        } for r in self.routes.values()]
+        out: list[dict] = []
+        for r in self.routes.values():
+            d0 = r.dirs[0]
+            item = {
+                "route_id": r.route_id, "name": r.name, "transport_type": r.transport_type,
+                "loop": r.loop,
+                # backward-compat: geometry/stops от первого направления
+                "geometry": d0.line,
+                "stops": [{"stop_id": s["stop_id"], "name": s["name"], "lat": s["lat"], "lon": s["lon"]}
+                          for s in d0.stops],
+                # полный список направлений — фронт использует это
+                "directions": [{
+                    "direction_id": d.direction_id, "name": d.name, "geometry": d.line,
+                    "stops": [{"stop_id": s["stop_id"], "name": s["name"], "lat": s["lat"], "lon": s["lon"]}
+                              for s in d.stops],
+                } for d in r.dirs],
+                "signals_count": len(r.signals),
+            }
+            out.append(item)
+        return out
+
+    def get_signals(self, route_id: str) -> list[dict]:
+        """Светофоры маршрута с текущей фазой (green/red/priority) + сколько секунд осталось."""
+        r = self.routes.get(route_id)
+        if not r:
+            return []
+        now_ms = self._sim_now_ms
+        priority = r._priority_until_ms > now_ms
+        out: list[dict] = []
+        for sg in r.signals:
+            if priority:
+                state = "priority"
+                left = int(max(0, (r._priority_until_ms - now_ms) / 1000))
+            else:
+                t = (now_ms / 1000 + sg.offset) % sg.cycle
+                if t < sg.green:
+                    state, left = "green", int(sg.green - t)
+                else:
+                    state, left = "red", int(sg.cycle - t)
+            out.append({"signal_id": sg.signal_id, "lat": sg.lat, "lon": sg.lon,
+                        "state": state, "left": left, "cycle": round(sg.cycle),
+                        "green": round(sg.green)})
+        return out
 
     def pub_vehicle(self, v: Vehicle) -> dict:
         out = {
-            "vehicle_id": v.vehicle_id, "route_id": v.route_id, "lat": v.lat, "lon": v.lon,
+            "vehicle_id": v.vehicle_id, "route_id": v.route_id, "direction_id": v.direction_id,
+            "lat": v.lat, "lon": v.lon,
             "is_reserve": v.is_reserve,
             "speed": round(v.speed_kmh), "heading": None,
             "delay_now_sec": round(v.delay_now_s), "delay_pred_sec": v.delay_pred_s,
             "risk_score": v.risk_score, "updated_at": v.updated_at,
+            "confidence": v.confidence,
+            "data_status": v.data_status,
+            "p_early": v.p_early, "p_ontime": v.p_ontime, "p_late": v.p_late,
+            "delay_interval_sec": v.delay_interval_sec,
         }
+        if v.off_route_m is not None:
+            out["off_route_m"] = v.off_route_m
         if v.risk_score >= 0.35:  # yellow+red — фронт ждёт reason/rec для не-зелёных
             out.update({
                 "reason_pattern": v.reason,
                 "recommendation": REC_FOR_REASON.get(v.reason, "monitor"),
                 "top_features": v.features,
-                "confidence": v.confidence,
             })
         return out
 
@@ -332,22 +461,16 @@ class Simulator:
         v = self.by_id.get(vehicle_id)
         if v is None:
             raise KeyError(vehicle_id)
-        r = self.routes[v.route_id]
-        now_ms = self._sim_now_ms
-        d_cur = _along(v, r, v.pos_m)
-        ordered = list(r.stops) if v.direction > 0 else list(reversed(r.stops))
+        d = self._dir(v)
         rows: list[dict] = []
-        next_found = False
-        for s in ordered:
-            d = _along(v, r, s["pos_m"])
-            plan_ms = _plan_time_ms(v, d)
+        for s in d.stops:
+            plan_ms = _plan_time_ms(v, s["pos_m"])
             row: dict = {"stop_id": s["stop_id"], "name": s["name"], "lat": s["lat"], "lon": s["lon"],
                          "time_plan": _iso_ms(int(plan_ms))}
-            if d <= d_cur:
+            if s["pos_m"] <= v.pos_m:
                 fact_ms = v.facts.get(s["stop_id"])
                 if fact_ms is None:
-                    # реконструкция: доля пройденного × текущее отклонение
-                    frac = 0.4 + 0.6 * (d / max(d_cur, 1))
+                    frac = 0.4 + 0.6 * (s["pos_m"] / max(v.pos_m, 1.0))
                     fact_ms = plan_ms + v.delay_now_s * 1000 * frac
                 row.update({
                     "status": "passed",
@@ -355,15 +478,15 @@ class Simulator:
                     "delay_sec": round((fact_ms - plan_ms) / 1000),
                 })
             else:
-                ahead = (d - d_cur) / PLAN_SPEED_MPS
+                ahead = (s["pos_m"] - v.pos_m) / PLAN_SPEED_MPS
                 delay = self._predict_delay(v, ahead)
+                status = "next" if not any(x["status"] == "next" for x in rows) else "upcoming"
                 row.update({
-                    "status": "upcoming" if next_found else "next",
+                    "status": status,
                     "time_pred": _iso_ms(int(plan_ms + delay * 1000)),
                     "delay_sec": round(delay),
                     "_ahead": ahead,
                 })
-                next_found = True
             rows.append(row)
         upcoming = [x for x in rows if x["status"] != "passed"]
         target = None
@@ -379,9 +502,61 @@ class Simulator:
             x.pop("_ahead", None)
         return {
             "vehicle_id": v.vehicle_id, "route_id": v.route_id,
-            "direction": f"{ordered[0]['name']} → {ordered[-1]['name']}",
+            "direction_id": v.direction_id,
+            "direction": d.name,
             "stops": rows,
         }
+
+    # ---------- аналитика ----------
+
+    def get_worst_stops(self, limit: int = 10) -> list[dict]:
+        """Топ-N проблемных остановок «прямо сейчас» — где ТС ждут наибольших опозданий.
+
+        Идея: обходим всех «живых» ТС; для каждой предстоящей остановки достаём
+        прогноз задержки; группируем по (route_id, direction_id, stop_id). Ранжируем
+        по средней задержке — эти места диспетчер видит сразу, а не после жалобы.
+        """
+        agg: dict[tuple[str, int, str], dict] = {}
+        for v in self.vehicles:
+            if v.is_reserve:
+                continue
+            d = self._dir(v)
+            for s in d.stops:
+                if s["pos_m"] <= v.pos_m:
+                    continue
+                ahead = (s["pos_m"] - v.pos_m) / PLAN_SPEED_MPS
+                if ahead > 15 * 60:  # смотрим только ближайшие 15 минут
+                    continue
+                delay = self._predict_delay(v, ahead)
+                key = (v.route_id, v.direction_id, s["stop_id"])
+                cell = agg.get(key)
+                if cell is None:
+                    cell = {"route_id": v.route_id, "direction_id": v.direction_id,
+                            "stop_id": s["stop_id"], "name": s["name"],
+                            "lat": s["lat"], "lon": s["lon"],
+                            "vehicles": 0, "sum_delay": 0.0, "max_delay": 0.0}
+                    agg[key] = cell
+                cell["vehicles"] += 1
+                cell["sum_delay"] += delay
+                if delay > cell["max_delay"]:
+                    cell["max_delay"] = delay
+        rows = []
+        for cell in agg.values():
+            avg = cell["sum_delay"] / cell["vehicles"]
+            if avg < 30:  # меньше 30 с — не «проблемная» точка
+                continue
+            rows.append({
+                "route_id": cell["route_id"],
+                "direction_id": cell["direction_id"],
+                "stop_id": cell["stop_id"],
+                "name": cell["name"],
+                "lat": cell["lat"], "lon": cell["lon"],
+                "avg_delay_sec": round(avg),
+                "max_delay_sec": round(cell["max_delay"]),
+                "vehicles": cell["vehicles"],
+            })
+        rows.sort(key=lambda r: (-r["avg_delay_sec"], -r["vehicles"]))
+        return rows[:limit]
 
     # ---------- what-if ----------
 
@@ -418,6 +593,8 @@ class Simulator:
                 v.trouble_left_s = 0
         if scenario == "add_reserve":
             self._add_reserve(route_id)
+        if scenario == "signal_priority":
+            self.routes[route_id]._priority_until_ms = self._sim_now_ms + 20 * 60 * 1000
         return {"ok": True}
 
     def _add_reserve(self, route_id: str) -> Vehicle:
@@ -425,7 +602,7 @@ class Simulator:
         v = Vehicle(
             vehicle_id=f"Р{self._reserve_seq}-{route_id}",
             route_id=route_id,
-            direction=1,
+            direction_id=0,
             pos_m=0.0,
             speed_kmh=22.0,
             speed_avg=20.0,
@@ -439,7 +616,6 @@ class Simulator:
         self._new_trip(v, delay_s=-20)
         self.vehicles.append(v)
         self.by_id[v.vehicle_id] = v
-        # первый шаг чтобы координаты обновились
         self.step(0.0)
         return v
 

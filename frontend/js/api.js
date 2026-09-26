@@ -21,7 +21,15 @@ window.App = window.App || {};
       async getVehicles() { return list(await get("/vehicles"), "vehicles"); },
       async getAlerts() { return list(await get("/alerts?active=true"), "alerts"); },
       async getMetrics() { return get("/metrics/model"); },
+      async getWorstStops(limit = 10) {
+        try { return await get(`/metrics/worst_stops?limit=${limit}`); }
+        catch { return []; }
+      },
       async getSchedule(id) { return get(`/vehicles/${encodeURIComponent(id)}/schedule`); },
+      async getSignals(route_id) {
+        try { return await get(`/routes/${encodeURIComponent(route_id)}/signals`); }
+        catch { return []; }
+      },
       async whatif(body) {
         const r = await fetch(base + "/whatif", {
           method: "POST",

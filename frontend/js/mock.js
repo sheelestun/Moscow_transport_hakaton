@@ -474,6 +474,37 @@ window.App = window.App || {};
         // Формат как у ML-сервиса (GET /metrics/model); MAE — реальный с labels_test (statistics/tables/model_metrics.csv)
         return { mae_test_s: 43.7, latency_ms_p50: 18, model_version: "catboost-ensemble-v1 (mock)" };
       },
+      async getWorstStops(limit = 10) {
+        // Топ-10 по прогнозируемой задержке среди всех предстоящих остановок.
+        const agg = new Map();
+        for (const v of vehicles) {
+          if (v._reserve) continue;
+          const sch = schedule(v);
+          for (const s of sch.stops) {
+            if (s.status === "passed" || !Number.isFinite(s.delay_sec)) continue;
+            const key = `${v.route_id}|${sch.direction_id ?? 0}|${s.stop_id}`;
+            const cell = agg.get(key) || {
+              route_id: v.route_id, direction_id: sch.direction_id ?? 0,
+              stop_id: s.stop_id, name: s.name, lat: s.lat, lon: s.lon,
+              vehicles: 0, sum: 0, max: 0,
+            };
+            cell.vehicles += 1; cell.sum += s.delay_sec;
+            if (s.delay_sec > cell.max) cell.max = s.delay_sec;
+            agg.set(key, cell);
+          }
+        }
+        return [...agg.values()]
+          .map((c) => ({
+            route_id: c.route_id, direction_id: c.direction_id,
+            stop_id: c.stop_id, name: c.name, lat: c.lat, lon: c.lon,
+            avg_delay_sec: Math.round(c.sum / c.vehicles),
+            max_delay_sec: Math.round(c.max),
+            vehicles: c.vehicles,
+          }))
+          .filter((r) => r.avg_delay_sec >= 30)
+          .sort((a, b) => b.avg_delay_sec - a.avg_delay_sec)
+          .slice(0, limit);
+      },
       // What-if: как изменится прогноз у ТС маршрута, если применить меру
       async whatif({ scenario, route_id, at_stop_id }) {
         await new Promise((res) => setTimeout(res, 300 + Math.random() * 400)); // «модель считает»

@@ -63,10 +63,17 @@ services:
 
   frontend:
     # SPA под nginx (см. frontend/Dockerfile). Внутри контейнера слушает 80.
+    # entrypoint.sh подставит эти env-переменные в js/config.js при старте.
     build: ./frontend
     container_name: msk-frontend
     ports:
       - "3000:80"
+    environment:
+      MODE: live
+      # Браузер обращается к бэкенду с хост-машины, а не изнутри compose-сети,
+      # поэтому localhost, а не msk-backend.
+      API_BASE: http://localhost:8000
+      WS_URL: ws://localhost:8000/ws
     depends_on:
       - backend
     networks:

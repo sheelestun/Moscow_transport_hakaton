@@ -187,6 +187,19 @@ button { font: inherit; color: inherit; }
 .hero__grid div { display: flex; flex-direction: column; font-size: 14px; }
 .hero__grid b { font-family: var(--mono); font-size: 17px; font-weight: 500; }
 
+.hero__data-status { margin-top: 10px; padding: 6px 10px; border-radius: 6px; font-size: 14px; line-height: 1.35; }
+.hero__data-status--warn { background: rgba(255,176,32,.10); border: 1px solid rgba(255,176,32,.35); color: #ffd88a; }
+.hero__data-status--bad { background: rgba(255,90,82,.10); border: 1px solid rgba(255,90,82,.35); color: #ffb4ae; }
+
+.hero__interval { margin-left: 10px; font-family: var(--mono); font-size: 15px; color: var(--muted); font-weight: 500; vertical-align: middle; }
+.hero__probs { display: flex; gap: 8px; margin-top: 8px; }
+.prob { display: flex; flex-direction: column; align-items: center; flex: 1; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,.03); border: 1px solid var(--line); }
+.prob i { font-family: var(--mono); font-size: 16px; font-weight: 600; font-style: normal; }
+.prob em { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-style: normal; margin-top: 2px; }
+.prob--early i { color: var(--green); }
+.prob--ontime i { color: #c3cddc; }
+.prob--late i { color: var(--red); }
+
 .level { padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 15px; white-space: nowrap; }
 .level--red { background: rgba(255,90,82,.16); color: var(--red); }
 .level--yellow { background: rgba(255,176,32,.16); color: var(--yellow); }
@@ -577,5 +590,28 @@ button { font: inherit; color: inherit; }
 
 /* Резервное ТС */
 .veh--reserve { border: 2px dashed #fff; }
+
+/* Кнопка загрузки CSV сверенных прогнозов */
+.verified__download { float: right; margin-top: 2px; font-size: 13px; font-family: var(--mono); }
+
+/* Топ проблемных остановок */
+.worst-stops { list-style: none; margin: 4px 12px 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.worst-stop { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,.02); border: 1px solid var(--line); }
+.worst-stop__delay { font-family: var(--mono); font-size: 15px; font-weight: 700; min-width: 52px; text-align: right; }
+.worst-stop__body { display: flex; flex-direction: column; font-size: 14px; line-height: 1.2; min-width: 0; }
+.worst-stop__body b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.worst-stop__body .muted { font-size: 12px; }
+
+/* Хитмап опозданий по часам суток */
+.heatmap { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; margin: 8px 12px 4px; }
+.heat-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 6px 2px; border-radius: 6px; border: 1px solid var(--line);
+  font-family: var(--mono); text-align: center; line-height: 1.15;
+}
+.heat-cell b { font-size: 12px; color: #c3cddc; font-weight: 600; }
+.heat-cell i { font-size: 11px; color: var(--muted); font-style: normal; margin-top: 1px; }
+.heat-cell--now { outline: 2px solid var(--accent); outline-offset: -1px; }
+.heat-cell--now b { color: #fff; }
 
 

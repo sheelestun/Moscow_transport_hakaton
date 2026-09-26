@@ -270,6 +270,11 @@ def get_routes() -> list[dict]:
     return SIM.get_routes()
 
 
+@app.get("/routes/{route_id}/signals")
+def get_signals(route_id: str) -> list[dict]:
+    return SIM.get_signals(route_id)
+
+
 @app.get("/vehicles")
 def get_vehicles() -> list[dict]:
     return SIM.get_vehicles()
@@ -297,6 +302,11 @@ async def metrics_model() -> dict:
         "mae_test_s": None, "latency_ms_p50": None,
         "model_version": f"{ALERT_MODEL_VERSION} (ml offline)",
     }
+
+
+@app.get("/metrics/worst_stops")
+def worst_stops(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
+    return SIM.get_worst_stops(limit=limit)
 
 
 @app.post("/whatif")
