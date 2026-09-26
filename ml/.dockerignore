@@ -1,0 +1,11 @@
+# В образ сервиса идут только src/ и модели; кеши, ноутбуки и эксперименты — нет.
+**/__pycache__
+**/*.pyc
+notebooks/
+examples/
+artifacts/cache_*.pkl
+artifacts/*.onnx
+artifacts/catboost_noroute_*
+artifacts/*.pt
+catboost_info/
+.ipynb_checkpoints/

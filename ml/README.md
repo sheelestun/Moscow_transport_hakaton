@@ -77,6 +77,15 @@ python ml/src/train_catboost.py --dataset ./dataset --fit --out submission.csv
 Данные — один день, 13 реальных ТС; в train 26 синтетических клонов (по 2 на ТС, те же моменты T).
 В `train/schedule.csv` лежат факты по целевым остановкам validate — это утечка из будущего, не используем.
 
+### Проверено и не вошло в модель
+
+- **«Физическая» ETA-модель на телеметрии** («за сколько секунд ТС проедет следующие D метров», без расписания;
+  обучение перекрёстно по машинам, чтобы не было утечки). Время проезда на чужих машинах предсказывает с ошибкой
+  33% против 47% у «расстояние / скорость», но основной модели прироста не дала: holdout 39.8 → 40.9,
+  proxy 38.8 → 38.9, LOVO 78.9 → 79.2 с (в пределах шума). Информация уже есть в признаках скорости, простоев и
+  оставшегося пути. Машины без разметки для такого самообучения почти бесполезны: большинство стоит в парке.
+  Код удалён, восстановить можно из истории git (коммит `e25922c`).
+
 ## Инференс-сервис (FastAPI)
 
 Для онлайн-контура (NDTP-поток → бэк → ML):
@@ -84,59 +93,56 @@ python ml/src/train_catboost.py --dataset ./dataset --fit --out submission.csv
 ```bash
 uvicorn src.inference_service:app --host 0.0.0.0 --port 8001
 
-# или через Docker
-docker build -t delay-ml ml/
-docker run --rm -p 8001:8001 delay-ml
+# или через Docker (лёгкий образ ~1 ГБ: requirements-inference.txt, без PyTorch)
+docker compose up -d --build ml
 ```
+
+Замеры скорости, холодного старта и поведения при плохих данных — [`PERFORMANCE.md`](PERFORMANCE.md).
+Эмулятор NDTP: что он шлёт, как проиграть через него настоящие треки и как ML отвечает на его поток — [`EMULATOR.md`](EMULATOR.md).
 
 Эндпоинты:
-- `GET /health` — статус + число загруженных моделей
-- `POST /predict` — одна точка
-- `POST /predict/batch` — массив
+- `GET /health` — статус, число моделей, есть ли модели неопределённости
+- `POST /predict` — одна точка; `POST /predict/batch` — `{"requests": [...]}` → `{"responses": [...]}`
+- `POST /whatif/predict` — сценарий (`add_reserve`, `adjust_interval`, `detour`, `signal_priority`, `hold_at_stop`)
+- `GET /metrics/model` — MAE по схемам валидации, живая latency p50/p95, покрытие интервала
+- `GET /model/info` — признаки, параметры, версия; `POST /reload` — подхватить переобученные модели
 - `GET /docs` — Swagger UI
 
-Пример запроса:
+Запрос: `sample_id, tr_id, T, target_stop_id, target_time_begin, cur_dev_s`, буфер `telemetry` (пакеты NDTP;
+пакеты позже `T` сервис отбрасывает сам) и `schedule` (плановое расписание ТС; если не передан — берётся из
+`SCHEDULE_PATH`). Время — ISO-8601, с микросекундами или без. Полный пример запроса и ответа —
+[`examples/predict_example.json`](examples/predict_example.json).
 
-```json
-POST /predict
-{
-  "sample_id": "131672_1767670500",
-  "tr_id": 131672,
-  "T": "2026-01-06T03:35:00Z",
-  "target_stop_id": 53700172828,
-  "target_time_begin": "2026-01-06T03:50:00Z",
-  "cur_dev_s": 274.0,
-  "telemetry": [
-    {"tr_id": 131672, "event_time": "2026-01-06T03:20:00Z", "lon": 37.61, "lat": 55.75, "speed": 15, "location_valid": true, "is_hist_data": 0},
-    ...
-  ],
-  "schedule": [
-    {"tr_id": 131672, "tt_action_item_id": 53700172828, "time_begin": "2026-01-06T03:50:00Z", "geom": "POINT (37.62 55.76)", "manual_fill": false},
-    ...
-  ]
-}
+Ответ (поля контракта §7.1 сохранены, остальное — расширение):
+
+| Поле | Что это |
+|---|---|
+| `delay_pred_sec` | прогноз задержки, с (по нему MAE) |
+| `delay_interval_sec` | `[от, до]`: факт попадает сюда в ~80% случаев (конформная калибровка на holdout) |
+| `p_early`, `p_ontime`, `p_late` | вероятности классов (< −60 с / норма / > +120 с), CatBoost MultiClass, AUC late 0.97 |
+| `risk_score` | = `p_late`; светофор дашборда: ≥ 0.7 красный, ≥ 0.35 жёлтый. `risk_level` — готовый цвет |
+| `reason_pattern`, `recommendation` | коды для дашборда (`accumulated_delay`, `long_dwell`, `speed_drop`, `traffic_jam_ahead`, **новые**: `terminal_turnaround`, `ahead_of_schedule`, `on_track`) |
+| `causes`, `recommendation_text` | причины и рекомендация текстом (из SHAP-вкладов признаков) |
+| `top_features` | `name`, `value`, `contribution` (доля 0..1), `contribution_sec` (вклад в секундах) |
+| `confidence` | 1 − ширина интервала / 600 с; ×0.5 при устаревших данных |
+| `data_status` | `live` / `stale` (нет координат > 3 мин) / `no_telemetry` / `fallback` (модель недоступна → прогноз = `cur_dev_s`, сервис не падает) |
+
+Проверка онлайн-контура против батча и latency (поднимает сервис локально, настоящий HTTP)::
+
+```bash
+python ml/src/replay_validate.py --dataset ./dataset --submission submission.csv
+# 151/151 прогноз совпадает с submission.csv (≤ 0.05 с); /predict p50 ~60 мс с HTTP, ~25 мс внутри; batch ~13 мс/точка
 ```
 
-Ответ:
-
-```json
-{
-  "sample_id": "131672_1767670500",
-  "delay_pred_sec": 187.0,
-  "risk_score": 0.83,
-  "confidence": 0.71,
-  "top_features": [{"name": "cur_dev_s", "value": 274.0}, ...],
-  "model_version": "catboost-ensemble-v1"
-}
-```
-
-Онлайн-фичи считаются тем же кодом, что и в батче (`features/tabular.build_features` через `features/from_stream.build_features_online`) — распределение фичей train/prod гарантированно совпадает.
+Онлайн-фичи считаются той же `features/tabular.point_features`, что и в батче: план ТС разбирается один раз при
+старте, телеметрия собирается прямо в массивы с правилами `clean_traffic`. `features/from_stream.build_features_online`
+(DataFrame-адаптер) остаётся эталоном для `verify_streaming.py`.
 
 Env-переменные:
 - `ML_ARTIFACTS` — путь к папке артефактов (по умолчанию `ml/artifacts`)
-- `ML_MODEL_VERSION` — строка версии для ответа (по умолчанию `catboost-ensemble-v1`)
-- `ML_RISK_MID_SEC` — задержка, при которой `risk_score = 0.5` (по умолчанию 120)
-- `ML_RISK_SLOPE_SEC` — крутизна сигмоиды (по умолчанию 60)
+- `SCHEDULE_PATH` — плановое расписание для запросов без `schedule` (по умолчанию `dataset/validate/schedule_plan.csv`)
+- `ML_MODEL_VERSION` — строка версии для ответа (по умолчанию из `catboost_meta.json`)
+- `ML_RISK_MID_SEC`, `ML_RISK_SLOPE_SEC` — сигмоида риска, только если нет моделей неопределённости
 
 ## ONNX-экспорт и latency
 
