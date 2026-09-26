@@ -93,10 +93,11 @@ python ml/src/train_catboost.py --dataset ./dataset --fit --out submission.csv
 ```bash
 uvicorn src.inference_service:app --host 0.0.0.0 --port 8001
 
-# или через Docker
-docker build -t delay-ml ml/
-docker run --rm -p 8001:8001 delay-ml
+# или через Docker (лёгкий образ ~1 ГБ: requirements-inference.txt, без PyTorch)
+docker compose up -d --build ml
 ```
+
+Замеры скорости, холодного старта и поведения при плохих данных — [`PERFORMANCE.md`](PERFORMANCE.md).
 
 Эндпоинты:
 - `GET /health` — статус, число моделей, есть ли модели неопределённости

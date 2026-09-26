@@ -26,14 +26,23 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def build_requests(dataset: Path, history_min: int = 90) -> list[dict]:
+def build_requests(dataset: Path, history_min: int = 90, send_schedule: bool = False) -> list[dict]:
     """Запросы в формате контракта сервиса: пакеты телеметрии ТС за ``history_min`` минут до T (0 — все до T).
 
-    Плановое расписание не передаём — сервис берёт план ТС из SCHEDULE_PATH (как backend со своим справочником).
+    ``send_schedule`` — передавать плановое расписание ТС в запросе (как backend/csv_replayer); иначе сервис
+    берёт план из SCHEDULE_PATH.
     """
     pts = pd.read_csv(dataset / "validate" / "points.csv", parse_dates=["T", "target_time_begin"])
     tr = pd.read_csv(dataset / "validate" / "traffic.csv", parse_dates=["event_time"], low_memory=False)
     by_tr = {k: g for k, g in tr.groupby("tr_id")}
+    plan = {}
+    if send_schedule:
+        sp = pd.read_csv(dataset / "validate" / "schedule_plan.csv")
+        sp = sp.astype(object).where(sp.notna(), None)
+        plan = {int(k): [{"tr_id": int(r["tr_id"]), "tt_action_item_id": int(r["tt_action_item_id"]),
+                          "time_begin": str(r["time_begin"]), "geom": r["geom"], "manual_fill": str(r["manual_fill"]),
+                          "building_address": r["building_address"]} for _, r in g.iterrows()]
+                for k, g in sp.groupby("tr_id")}
     reqs = []
     for r in pts.itertuples(index=False):
         g = by_tr.get(r.tr_id)
@@ -50,7 +59,8 @@ def build_requests(dataset: Path, history_min: int = 90) -> list[dict]:
                              "location_valid": str(p.location_valid).lower(), "is_hist_data": int(bool(p.is_hist_data))})
         reqs.append({"sample_id": r.sample_id, "tr_id": int(r.tr_id), "T": r.T.isoformat(),
                      "target_stop_id": int(r.target_stop_id), "target_time_begin": r.target_time_begin.isoformat(),
-                     "cur_dev_s": float(r.cur_dev_s), "telemetry": tele})
+                     "cur_dev_s": float(r.cur_dev_s), "telemetry": tele,
+                     **({"schedule": plan.get(int(r.tr_id), [])} if send_schedule else {})})
     return reqs
 
 
@@ -60,12 +70,13 @@ def main() -> None:
     ap.add_argument("--submission", type=Path, default=Path("submission.csv"))
     ap.add_argument("--url", default=None, help="адрес запущенного сервиса; по умолчанию — в процессе")
     ap.add_argument("--history-min", type=int, default=90)
+    ap.add_argument("--send-schedule", action="store_true", help="передавать план ТС в запросе (как backend)")
     ap.add_argument("--save-example", type=Path, default=None, help="сохранить пример запроса/ответа в JSON")
     args = ap.parse_args()
 
     import httpx
 
-    reqs = build_requests(args.dataset, args.history_min)
+    reqs = build_requests(args.dataset, args.history_min, args.send_schedule)
     url = args.url
     if url is None:  # поднимаем сервис локально в фоновом потоке (настоящий HTTP)
         import threading

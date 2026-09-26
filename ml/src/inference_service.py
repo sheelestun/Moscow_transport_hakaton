@@ -267,6 +267,12 @@ def _load_metrics() -> dict:
         v = json.loads(fresh.read_text())
         m["validation"] = v
         m["mae_test_s"] = v.get("holdout_mae", m["mae_test_s"])
+        # в контейнере нет statistics/tables: mae_zero берём из метрик модели (или выводим из оценки MAE_TARGET)
+        if m["mae_baseline_test_s"] is None:
+            mz = v.get("holdout_zero_mae")
+            if mz is None and {"holdout_baseline_mae", "mae_target_estimate"} <= v.keys():
+                mz = (v["holdout_baseline_mae"] - 0.4 * v["mae_target_estimate"]) / 0.6  # score(бейзлайн) = 0.40
+            m["mae_baseline_test_s"] = mz
     mae, mae_zero = m["mae_test_s"], m["mae_baseline_test_s"]
     if mae is not None and mae_zero is not None and mae_zero > MAE_TARGET:
         m["score_estimate"] = float(max(0.0, min(1.0, (mae_zero - mae) / (mae_zero - MAE_TARGET))))

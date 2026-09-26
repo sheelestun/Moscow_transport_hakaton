@@ -280,6 +280,7 @@ def main() -> None:
         ART.mkdir(parents=True, exist_ok=True)
         (ART / "catboost_metrics.json").write_text(json.dumps({
             "holdout_mae": ho["test_mae"], "holdout_baseline_mae": ho["test_base"],
+            "holdout_zero_mae": mae(data["test"][1]["y"], 0),
             "proxy_mae": px["proxy_mae"], "proxy_baseline_mae": px["proxy_base"],
             "lovo_mae": lv["lovo_mae"], "lovo_baseline_mae": lv["lovo_base"], "mae_target_estimate": mt,
         }, indent=2))
