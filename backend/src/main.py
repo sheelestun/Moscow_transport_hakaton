@@ -245,7 +245,9 @@ async def _on_startup() -> None:
 async def _on_shutdown() -> None:
     if _bg_task:
         _bg_task.cancel()
-        with contextlib.suppress(Exception):
+        # CancelledError не Exception в 3.8+ — глотаем через BaseException,
+        # иначе TestClient падает на выходе с ошибкой отмены фоновой задачи
+        with contextlib.suppress(BaseException):
             await _bg_task
     if _http is not None:
         await _http.aclose()

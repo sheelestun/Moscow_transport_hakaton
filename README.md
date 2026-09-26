@@ -39,10 +39,20 @@ docker compose ps                                     # ждём healthy
 - **Backend Swagger**: http://localhost:8000/docs
 - **ML Swagger**: http://localhost:8001/docs
 
-Полный сценарий демо (шаг за шагом, для жюри) — [`infra/DEMO.md`](./infra/DEMO.md).
+Полная инструкция (что клонить, куда положить датасет, как поднять только backend или только ML для NDTP-парсера) — [`LOCAL_SETUP.md`](./LOCAL_SETUP.md). Сценарий демо для жюри — [`infra/DEMO.md`](./infra/DEMO.md).
+
+## Тесты
+
+```bash
+pip install -r backend/requirements.txt -r ml/requirements.txt pytest httpx
+pytest      # backend/tests + ml/tests + statistics/tests, ~2 сек
+```
+
+CI гоняет то же самое на каждом пуше (`.github/workflows/tests.yml`).
 
 ## Ключевые документы
 
+- [`LOCAL_SETUP.md`](./LOCAL_SETUP.md) — как поднять весь стек локально
 - [`ARCHITECTURE_AND_ROLES.md`](./ARCHITECTURE_AND_ROLES.md) — архитектура, роли, контракты
 - [`ml/README.md`](./ml/README.md) — ML-трек: как тренировать, инференс-сервис, ONNX
 - [`ml/PERFORMANCE.md`](./ml/PERFORMANCE.md) — цифры: MAE, latency, размеры, деградация
