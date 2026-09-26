@@ -7,8 +7,9 @@ import os
 import sys
 
 # -- Path setup --------------------------------------------------------------
-# Чтобы autodoc нашёл ML-модули из ml/src/, добавляем путь.
+# Чтобы autodoc нашёл ML- и backend-модули, добавляем оба пути.
 sys.path.insert(0, os.path.abspath("../../ml/src"))
+sys.path.insert(0, os.path.abspath("../../backend/src"))
 
 # -- Project information -----------------------------------------------------
 project = "Предиктор задержек Москвы"
@@ -61,6 +62,7 @@ autodoc_mock_imports = [
     "seaborn",
     "scipy",
     "joblib",
+    "httpx",
 ]
 
 templates_path = ["_templates"]

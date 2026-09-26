@@ -36,34 +36,44 @@ services:
     restart: unless-stopped
 
   backend:
-    # Плейсхолдер — реальный сервис пилит Даниил Герман (FastAPI:8000).
-    # Заменить image+command на build: ./backend когда появится Dockerfile.
-    image: python:3.12-slim
+    # Диспетчерский шлюз: FastAPI + WebSocket, симулирует движение ТС по маршрутам
+    # и вызывает ML `/whatif/predict`. Контракт — как в `frontend/js/api.js`.
+    build: ./backend
     container_name: msk-backend
-    command: ["sh", "-c", "echo 'backend not implemented yet' && sleep infinity"]
     ports:
       - "8000:8000"
+    environment:
+      # ML доступен по service-name в общей сети `msk`.
+      ML_URL: http://ml:8001
+      ML_MODEL_VERSION: catboost-ensemble-v1
+      BACKEND_TICK_S: "1.0"
+      BACKEND_SPEED_FACTOR: "5.0"
     depends_on:
-      # Без condition — плейсхолдер и так не поднимет healthcheck.
-      - ml
-      - redis
-      - postgres
+      ml:
+        condition: service_healthy
     networks:
       - msk
     healthcheck:
-      # Заглушка, чтобы docker compose не ругался при поднятии зависимых.
-      test: ["CMD-SHELL", "exit 0"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
+      start_period: 10s
       retries: 3
     restart: unless-stopped
 
   frontend:
     # SPA под nginx (см. frontend/Dockerfile). Внутри контейнера слушает 80.
+    # entrypoint.sh подставит эти env-переменные в js/config.js при старте.
     build: ./frontend
     container_name: msk-frontend
     ports:
       - "3000:80"
+    environment:
+      MODE: live
+      # Браузер обращается к бэкенду с хост-машины, а не изнутри compose-сети,
+      # поэтому localhost, а не msk-backend.
+      API_BASE: http://localhost:8000
+      WS_URL: ws://localhost:8000/ws
     depends_on:
       - backend
     networks:

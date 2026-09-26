@@ -1,81 +1,75 @@
 # Moscow Transport Hackathon — Предиктор задержек
 
-ИИ-система раннего прогнозирования отклонений от графика наземного городского транспорта Москвы за **10–15 минут** до фактической задержки. Хакатон Московского транспорта, дедлайн — **27 сентября 2026, 23:59 МСК**.
+ИИ-система раннего прогнозирования отклонений наземного транспорта Москвы от графика за **10–15 минут** до факта. Хакатон Московского транспорта, дедлайн — **27 сентября 2026, 23:59 МСК**.
 
-## Что делает
+## Актуальное состояние
 
-Непрерывно анализирует потоковую телеметрию NDTP, накладывает на расписание и предсказывает **фактическую задержку в секундах** на первой остановке в окне T+10..15 минут. Выводит алерты на дашборд диспетчера с топ-фичами, предполагаемой причиной и рекомендацией (выпуск резерва, объезд, коррекция интервалов).
+| Компонент | Статус | Комментарий |
+|---|---|---|
+| ML-модель | ✅ готова | CatBoost-ансамбль, локальный **score ≈ 1.0** (платформенный тоже 1.0) |
+| Инференс-сервис | ✅ | FastAPI `:8001`, `/predict`, `/predict/batch`, `/metrics/model`, `/whatif/predict`, `/reload`. `p50 = 1.6 мс` |
+| ONNX-экспорт | ✅ | fp32 6× быстрее CatBoost native |
+| Backend-шлюз | 🟡 MVP-заглушка | FastAPI `:8000`, WebSocket, симулирует движение ТС + зовёт ML |
+| NDTP-парсер | ⏳ Даниил Герман | пока замещается симулятором в backend / `csv_replayer.py` фолбэком |
+| Frontend | ✅ | MapLibre, карточка ТС, алерты, What-if, обрыв связи, шкала 15 мин |
+| Docker Compose | ✅ | `docker compose up -d --build` — весь стек |
+| Отчёт по данным | ✅ | `statistics/REPORT.md`, 8 графиков, все метрики |
+| Sphinx-документация | ✅ | `docs/sphinx/` — `make html` |
 
-Метрика: **MAE**, скор в [0, 1] по формуле `max(0, min(1, (mae_zero − MAE) / (mae_zero − MAE_TARGET)))`. Целевой скор: **≥ 0.70** (максимум 6 баллов).
+## Что делает система
 
-## Архитектура
+1. **NDTP-эмулятор** льёт бинарный TCP-поток телеметрии (13 реальных ТС из validate/traffic.csv).
+2. **Backend** держит стейт по ТС, зовёт ML для прогноза `delay_pred_sec`, `reason_pattern`, `top_features`, `confidence`.
+3. **ML-сервис** на CatBoost-ансамбле: `MAE ~ 40 с` на реальных точках, `p95 latency < 60 мс` в контейнере.
+4. **Frontend** пушит `vehicle.update` по WebSocket, рисует карту + алерты + What-if-сценарии.
 
-Три независимых сервиса в `docker-compose`:
+Метрика хакатона: `MAE`, скор `max(0, min(1, (mae_zero − MAE) / (mae_zero − MAE_TARGET)))` — у нас упирается в потолок **1.0**.
 
-- **ML-модуль** — CatBoost (табличка) + PyTorch/Transformer (последовательности), ансамбль, экспорт в ONNX. FastAPI-сервис с `/predict` и `/predict/batch`.
-- **Backend** — NDTP TCP-сервер, парсер, feature store на Redis, оркестрация, REST + WebSocket API, Swagger UI.
-- **Frontend (BI-дашборд)** — карта Москвы, светофор рисков по маршрутам, карточка инцидента, лента алертов, панель What-if.
+## Как запустить всё
 
-Плюс: Redis Streams (шина + онлайн-фичи), Postgres (история и алерты), Nginx (реверс-прокси на демо).
+Требования: Docker + Docker Compose v2, ~4 ГБ RAM. Датасет — на Яндекс.Диске (`https://disk.yandex.ru/d/CA6tsj4aJJ4Aaw`), кладём в `./dataset/`.
 
-Подробно — см. [`ARCHITECTURE_AND_ROLES.md`](./ARCHITECTURE_AND_ROLES.md).
+```bash
+docker load -i dataset/ndtp-telemetry-emulator.tar   # эмулятор из OCI-архива
+docker compose up -d --build                          # весь стек
+docker compose ps                                     # ждём healthy
+```
 
-## Стек (строго)
+- **Дашборд**: http://localhost:3000
+- **Backend Swagger**: http://localhost:8000/docs
+- **ML Swagger**: http://localhost:8001/docs
 
-Python 3.12+, PyTorch, CatBoost, Docker. Никаких LightGBM/XGBoost/TF/JAX. Фронтенд-стек не оговорён.
+Полный сценарий демо (шаг за шагом, для жюри) — [`infra/DEMO.md`](./infra/DEMO.md).
+
+## Ключевые документы
+
+- [`ARCHITECTURE_AND_ROLES.md`](./ARCHITECTURE_AND_ROLES.md) — архитектура, роли, контракты
+- [`ml/README.md`](./ml/README.md) — ML-трек: как тренировать, инференс-сервис, ONNX
+- [`ml/PERFORMANCE.md`](./ml/PERFORMANCE.md) — цифры: MAE, latency, размеры, деградация
+- [`ml/EMULATOR.md`](./ml/EMULATOR.md) — NDTP-эмулятор end-to-end
+- [`infra/DEMO.md`](./infra/DEMO.md) — сценарий показа
+- [`statistics/REPORT.md`](./statistics/REPORT.md) — анализ датасета от Шелестова
+- [`docs/sphinx/`](./docs/sphinx/) — Sphinx-документация модулей (`make html`)
+
+## Как построить `submission.csv`
+
+```bash
+# обучить ансамбль на train+test и получить сабмит на validate
+python ml/src/train_catboost.py --dataset ./dataset --fit --out submission.csv
+
+# верифицировать: онлайн-инференс == батч
+python ml/src/verify_streaming.py --dataset ./dataset --submission submission.csv
+```
 
 ## Команда
 
-| Роль | Кто |
-|---|---|
-| ML | Степан, Фёдор |
-| Backend | Даниил Герман |
-| Frontend / BI | Вероника |
-| Data Analyst / DBA | Даниил Шелестов |
+| Роль | Кто | Основные ветки |
+|---|---|---|
+| ML | Степан, Фёдор | `main`, `ml/catboost-tabular` |
+| Backend | Даниил Герман | (в работе) |
+| Frontend | Вероника | `frontend` |
+| Data / DBA | Даниил Шелестов | `feature/DBA` |
 
-## Данные
+## Стек
 
-Датасет — по ссылке из ТЗ на Яндекс.Диске (`https://disk.yandex.ru/d/CA6tsj4aJJ4Aaw`). Не коммитим в git. Локально ожидается в `./dataset/` или указывается через переменную окружения `DATASET_DIR`.
-
-- `train/`, `test/` — телеметрия + расписание с фактом.
-- `labels/labels_train.csv`, `labels_test.csv` — прогнозные точки с таргетом.
-- `validate/` — телеметрия + плановое расписание + `points.csv` (без факта).
-- `sample_submission.csv` — бейзлайн `prediction = cur_dev_s` (score ≈ 0.40).
-- `ndtp-telemetry-emulator.tar` — Docker-образ эмулятора для real-time контура.
-- `docs/Emulator-and-Telematic-Packets-Specification.md` — спека NDTP-протокола.
-
-## Как запустить (после MVP)
-
-```bash
-# Поднять весь стек
-docker compose up -d
-
-# Загрузить эмулятор NDTP
-docker load -i ./dataset/ndtp-telemetry-emulator.tar
-docker run --rm -p 18080:18080 --add-host=host.docker.internal:host-gateway \
-  --name ndtp-emu ndtp-telemetry-emulator:1.0
-
-# Настроить эмулятор (пример)
-curl -X POST http://localhost:18080/api/config \
-  -H 'Content-Type: application/json' \
-  -d @infra/emulator-config.json
-```
-
-- Дашборд: `http://localhost:3000`
-- Swagger API: `http://localhost:8000/docs`
-- Метрики модели: `http://localhost:8000/metrics/model`
-
-## Как построить submission.csv
-
-```bash
-python ml/src/predict_submission.py \
-  --dataset ./dataset \
-  --model ml/artifacts/ensemble.pt \
-  --out submission.csv
-```
-
-## Документация
-
-- Код: PyDoc/Sphinx — `docs/sphinx/_build/html/index.html` после `make html`.
-- API: OpenAPI/Swagger — `http://localhost:8000/docs`.
-- Команде: [`ARCHITECTURE_AND_ROLES.md`](./ARCHITECTURE_AND_ROLES.md) — архитектура, роли, контракты, план работ.
+Python 3.12+, CatBoost, FastAPI, Docker Compose, Redis, Postgres, nginx, MapLibre. Без LightGBM/XGBoost/TF/JAX.

@@ -40,6 +40,28 @@ def mae(y, p) -> float:
     return float(np.mean(np.abs(np.asarray(y, float) - np.asarray(p, float))))
 
 
+LEAD_BINS = [(0, 180, "0-3м"), (180, 300, "3-5м"), (300, 600, "5-10м"),
+             (600, 900, "10-15м"), (900, float("inf"), "15м+")]
+
+
+def mae_by_lead(y: pd.Series, p: pd.Series, lead_s: pd.Series) -> list[dict]:
+    """MAE по бинам горизонта прогноза (lead_s = сколько сек до целевого момента).
+
+    Диспетчер должен понимать, где модель точнее, а где — фактически «предупреждает
+    заранее». Обычно MAE растёт с горизонтом; это надо видеть, а не усреднять.
+    """
+    y = np.asarray(y, float); p = np.asarray(p, float); lead = np.asarray(lead_s, float)
+    out: list[dict] = []
+    for lo, hi, label in LEAD_BINS:
+        m = (lead >= lo) & (lead < hi)
+        n = int(m.sum())
+        if n == 0:
+            continue
+        out.append({"bin": label, "lead_lo_s": lo, "lead_hi_s": None if hi == float("inf") else hi,
+                    "points": n, "mae_s": float(np.mean(np.abs(y[m] - p[m])))})
+    return out
+
+
 def score(y, p, mae_target: float) -> float:
     mz = mae(y, 0)
     return float(np.clip((mz - mae(y, p)) / (mz - mae_target), 0, 1))
@@ -278,11 +300,15 @@ def main() -> None:
         print(f"proxy K-fold (как validate): MAE {px['proxy_mae']:.2f} (бейзлайн {px['proxy_base']:.2f})")
         print(f"LOVO (честная): MAE {lv['lovo_mae']:.2f} (бейзлайн {lv['lovo_base']:.2f})")
         ART.mkdir(parents=True, exist_ok=True)
+        # разбивка по горизонту прогноза: где модель точнее «на подлёте», где — за 10 мин
+        Xte, Mte = data["test"]
+        by_lead_ho = mae_by_lead(Mte["y"], ho["pred"], Xte["lead_s"]) if "lead_s" in Xte.columns else []
         (ART / "catboost_metrics.json").write_text(json.dumps({
             "holdout_mae": ho["test_mae"], "holdout_baseline_mae": ho["test_base"],
             "holdout_zero_mae": mae(data["test"][1]["y"], 0),
             "proxy_mae": px["proxy_mae"], "proxy_baseline_mae": px["proxy_base"],
             "lovo_mae": lv["lovo_mae"], "lovo_baseline_mae": lv["lovo_base"], "mae_target_estimate": mt,
+            "mae_by_lead": by_lead_ho,
         }, indent=2))
 
     if args.eval_uncertainty or args.fit or args.fit_uncertainty:
