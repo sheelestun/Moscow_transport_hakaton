@@ -229,6 +229,13 @@ window.App = window.App || {};
       map.setPaintProperty("routes-line", "line-opacity", 0.85);
     },
 
+    // Подсветить «паровозики»: пары ТС одного маршрута с малым интервалом
+    setBunchingPairs(pairs) {
+      const ids = new Set();
+      for (const p of pairs || []) { ids.add(p.leader_id); ids.add(p.follower_id); }
+      for (const [id, m] of markers) m.el.classList.toggle("veh--bunch", ids.has(id));
+    },
+
     focusRoute(route, vehicle) {
       const b = new maplibregl.LngLatBounds();
       route.geometry.forEach((p) => b.extend(ll(p)));

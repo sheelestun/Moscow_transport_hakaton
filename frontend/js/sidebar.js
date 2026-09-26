@@ -114,6 +114,7 @@ window.App = window.App || {};
             <div><span class="muted">Скорость</span><b>${v.speed ?? "—"} км/ч</b></div>
             <div><span class="muted">Риск</span><b>${App.pct(v.risk_score)}</b></div>
             <div><span class="muted">Уверенность</span><b>${v.confidence != null ? App.pct(v.confidence) : alert && alert.confidence != null ? App.pct(alert.confidence) : "—"}</b></div>
+            ${headwayHtml(v)}
           </div>
         </div>`;
 
@@ -180,6 +181,19 @@ window.App = window.App || {};
     const margin = Math.round((hi - lo) / 2);
     if (margin <= 0) return "";
     return `<span class="hero__interval" title="80% доверительный интервал прогноза">±${margin}с (80%)</span>`;
+  }
+
+  // Интервал до предыдущего ТС того же маршрута (bus bunching, Daganzo 2009).
+  // Если факт < 60% плана — «паровозик»: их надо разводить (hold_at_stop / adjust_interval).
+  function headwayHtml(v) {
+    if (!Number.isFinite(v.headway_prev_sec)) return "";
+    const h = Math.max(0, Math.round(v.headway_prev_sec));
+    const plan = Number.isFinite(v.plan_headway_sec) && v.plan_headway_sec > 0 ? Math.round(v.plan_headway_sec) : null;
+    const ratio = plan ? h / plan : null;
+    const cls = ratio != null && ratio < 0.6 ? "t-red" : ratio != null && ratio < 0.85 ? "t-yellow" : "";
+    const min = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const title = plan ? `интервал до предыдущего ТС · план ${min(plan)}` : "интервал до предыдущего ТС";
+    return `<div title="${title}"><span class="muted">Интервал</span><b class="${cls}">${min(h)}${plan ? ` <span class="muted small">/ ${min(plan)}</span>` : ""}</b></div>`;
   }
 
   // Вероятности исходов: раньше / в срок / позже

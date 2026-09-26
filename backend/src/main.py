@@ -309,6 +309,12 @@ def worst_stops(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
     return SIM.get_worst_stops(limit=limit)
 
 
+@app.get("/metrics/bunching")
+def metrics_bunching() -> list[dict]:
+    """Пары ТС, идущие «паровозиком» на одном маршруте/направлении."""
+    return SIM.get_bunching()
+
+
 @app.post("/whatif")
 async def whatif(req: WhatifRequest) -> dict:
     """Сценарий по маршруту. Для каждого ТС считаем прогноз до/после.

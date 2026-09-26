@@ -431,7 +431,31 @@ class Simulator:
                         "green": round(sg.green)})
         return out
 
+    def _headway_prev_sec(self, v: Vehicle) -> tuple[Optional[int], Optional[int]]:
+        """Сколько секунд назад через текущую точку `v` прошёл предыдущий ТС того же
+        маршрута/направления. Возвращает (headway, plan_headway). Оба — целые секунды.
+
+        Для интерактивной карточки: если фактический интервал заметно меньше
+        планового — bus bunching (Daganzo, 2009). Диспетчер видит это сразу.
+        """
+        if v.is_reserve:
+            return None, None
+        peers = [x for x in self.vehicles if not x.is_reserve
+                 and x.route_id == v.route_id and x.direction_id == v.direction_id]
+        if len(peers) < 2:
+            return None, None
+        peers.sort(key=lambda x: x.pos_m)
+        idx = next((i for i, x in enumerate(peers) if x.vehicle_id == v.vehicle_id), None)
+        if idx is None or idx == 0:
+            return None, None
+        prev = peers[idx - 1]
+        headway = int((v.pos_m - prev.pos_m) / PLAN_SPEED_MPS)
+        d = self.routes[v.route_id].dirs[v.direction_id]
+        plan_headway = int(d.length_m / (len(peers) * PLAN_SPEED_MPS))
+        return headway, plan_headway
+
     def pub_vehicle(self, v: Vehicle) -> dict:
+        headway, plan_headway = self._headway_prev_sec(v)
         out = {
             "vehicle_id": v.vehicle_id, "route_id": v.route_id, "direction_id": v.direction_id,
             "lat": v.lat, "lon": v.lon,
@@ -443,6 +467,8 @@ class Simulator:
             "data_status": v.data_status,
             "p_early": v.p_early, "p_ontime": v.p_ontime, "p_late": v.p_late,
             "delay_interval_sec": v.delay_interval_sec,
+            "headway_prev_sec": headway,
+            "plan_headway_sec": plan_headway,
         }
         if v.off_route_m is not None:
             out["off_route_m"] = v.off_route_m
@@ -557,6 +583,44 @@ class Simulator:
             })
         rows.sort(key=lambda r: (-r["avg_delay_sec"], -r["vehicles"]))
         return rows[:limit]
+
+    def get_bunching(self, factor: float = 0.6, min_gap_sec: float = 45.0) -> list[dict]:
+        """Bus bunching (Daganzo, 2009): пары соседних ТС одного маршрута/направления,
+        у которых фактический интервал меньше `factor` · планового.
+
+        План считаем как `длина_направления / (n_ТС_в_направлении · plan_speed)`.
+        Если факт-интервал < max(min_gap_sec, factor·плана) — попадает в список.
+        Диспетчер сразу видит, где «слипаются» — можно применить hold_at_stop.
+        """
+        groups: dict[tuple[str, int], list[Vehicle]] = {}
+        for v in self.vehicles:
+            if v.is_reserve:
+                continue
+            groups.setdefault((v.route_id, v.direction_id), []).append(v)
+        out: list[dict] = []
+        for (route_id, dir_id), vs in groups.items():
+            if len(vs) < 2:
+                continue
+            d = self.routes[route_id].dirs[dir_id]
+            plan_headway = d.length_m / (len(vs) * PLAN_SPEED_MPS)
+            threshold = max(min_gap_sec, plan_headway * factor)
+            vs_sorted = sorted(vs, key=lambda x: x.pos_m)
+            for a, b in zip(vs_sorted[:-1], vs_sorted[1:]):
+                headway = (b.pos_m - a.pos_m) / PLAN_SPEED_MPS
+                if headway < threshold:
+                    out.append({
+                        "route_id": route_id,
+                        "direction_id": dir_id,
+                        "leader_id": a.vehicle_id,
+                        "follower_id": b.vehicle_id,
+                        "headway_sec": round(headway),
+                        "plan_headway_sec": round(plan_headway),
+                        "ratio": round(headway / max(plan_headway, 1.0), 2),
+                        "leader": {"lat": a.lat, "lon": a.lon},
+                        "follower": {"lat": b.lat, "lon": b.lon},
+                    })
+        out.sort(key=lambda x: x["ratio"])
+        return out
 
     # ---------- what-if ----------
 

@@ -126,6 +126,16 @@
           <p class="muted">Топ-10 по прогнозируемой задержке в ближайшие 15 минут.</p>
         </div>
         <ul class="worst-stops" id="worst-stops"></ul>
+
+        <div class="panel__head panel__head--sub"><h3>Слипание «паровозиком»</h3>
+          <p class="muted">Пары ТС одного маршрута с интервалом меньше 60% планового (bus bunching).</p>
+        </div>
+        <ul class="worst-stops" id="bunching"></ul>
+
+        <div class="panel__head panel__head--sub"><h3>Точность по горизонту</h3>
+          <p class="muted">MAE в зависимости от того, за сколько минут до целевого момента сделан прогноз.</p>
+        </div>
+        <div class="lead-bars" id="lead-bars"></div>
       </div>
       <div id="view-vehicle" hidden></div>
     </aside>

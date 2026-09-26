@@ -131,6 +131,50 @@ window.App = window.App || {};
     }
   }
 
+  function renderLeadBars(mae_by_lead) {
+    const el = $("lead-bars");
+    if (!el) return;
+    if (!Array.isArray(mae_by_lead) || !mae_by_lead.length) { el.hidden = true; return; }
+    const max = Math.max(...mae_by_lead.map((r) => r.mae_s || 0), 1);
+    el.innerHTML = mae_by_lead.map((r) => {
+      const pct = Math.max(3, Math.round((r.mae_s / max) * 100));
+      return `<div class="lead-bar" title="${App.esc(r.bin)}: MAE ${Math.round(r.mae_s)} с${r.points ? ` (n=${r.points})` : ""}">
+        <span class="lead-bar__lab">${App.esc(r.bin)}</span>
+        <span class="lead-bar__track"><i style="width:${pct}%"></i></span>
+        <span class="lead-bar__val">${Math.round(r.mae_s)} с</span>
+      </div>`;
+    }).join("");
+  }
+
+  async function renderBunching() {
+    if (!source.getBunching) return;
+    const el = $("bunching");
+    if (!el) return;
+    try {
+      const pairs = await source.getBunching();
+      if (!pairs || !pairs.length) {
+        el.innerHTML = `<li class="empty empty--muted">Слипаний не обнаружено.</li>`;
+        App.map.setBunchingPairs && App.map.setBunchingPairs([]);
+        return;
+      }
+      el.innerHTML = pairs.slice(0, 6).map((p) => {
+        const gap = Math.max(0, Math.round(p.headway_sec));
+        const plan = Math.max(0, Math.round(p.plan_headway_sec));
+        const pct = Math.round((p.ratio || 0) * 100);
+        return `<li class="worst-stop" data-pair="${App.esc(p.leader_id)}|${App.esc(p.follower_id)}">
+          <span class="worst-stop__delay t-red">${gap}с</span>
+          <span class="worst-stop__body">
+            <b>${App.esc(p.route_id)} · пара ${App.esc(p.leader_id)} → ${App.esc(p.follower_id)}</b>
+            <span class="muted">интервал ${gap}с при плане ${plan}с (${pct}% от плана)</span>
+          </span>
+        </li>`;
+      }).join("");
+      App.map.setBunchingPairs && App.map.setBunchingPairs(pairs);
+    } catch {
+      el.hidden = true;
+    }
+  }
+
   function renderHourlyHeatmap() {
     const el = $("heatmap");
     if (!el || !App.HOURLY_STATS) return;
@@ -702,7 +746,12 @@ window.App = window.App || {};
         const parts = [];
         if (mae != null) parts.push(`MAE <b>${Math.round(mae)} с</b>`);
         if (lat != null) parts.push(`${latName} <b>${Math.round(lat)} мс</b>`);
+        // Покрытие 80%-интервала (p10..p90 + conformal margin): доля фактов, попавших внутрь.
+        // Ждём ~80% — если сильно ниже, интервал слишком узкий и «под риском» врёт.
+        const cov = num(m?.uncertainty?.coverage_calibrated_holdout) ?? num(m?.uncertainty?.coverage_calibrated);
+        if (cov != null) parts.push(`покрытие <b>${Math.round(cov * 100)}%</b>`);
         if (parts.length) $("model-info").innerHTML = parts.join(" · ");
+        renderLeadBars(m?.validation?.mae_by_lead);
       })
       .catch(() => {});
 
@@ -710,6 +759,7 @@ window.App = window.App || {};
     renderRoutes();
     renderHourlyHeatmap();
     renderWorstStops();
+    renderBunching();
     source.start(handlers);
 
     setInterval(renderRoutes, 2000);            // светофор маршрутов
@@ -720,6 +770,7 @@ window.App = window.App || {};
     setInterval(() => state.status === "degraded" && renderStatus(), 5000);
     setInterval(renderHourlyHeatmap, 60_000);   // подсветка «текущего часа» раз в минуту
     setInterval(renderWorstStops, 10_000);      // проблемные остановки — быстро реагируем на события
+    setInterval(renderBunching, 10_000);        // слипания «паровозиком» — тоже событийная штука
   }
 
   App.state = state; // для отладки в консоли браузера

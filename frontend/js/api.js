@@ -25,6 +25,10 @@ window.App = window.App || {};
         try { return await get(`/metrics/worst_stops?limit=${limit}`); }
         catch { return []; }
       },
+      async getBunching() {
+        try { return await get("/metrics/bunching"); }
+        catch { return []; }
+      },
       async getSchedule(id) { return get(`/vehicles/${encodeURIComponent(id)}/schedule`); },
       async getSignals(route_id) {
         try { return await get(`/routes/${encodeURIComponent(route_id)}/signals`); }

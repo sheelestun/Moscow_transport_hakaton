@@ -261,13 +261,28 @@ window.App = window.App || {};
       return d;
     }
 
+    // Интервал до предыдущего ТС того же маршрута/направления (bus bunching, Daganzo 2009).
+    // План: длина_направления / (n_ТС · plan_speed). Факт: (Δpos_m)/plan_speed.
+    const headwayFor = (v) => {
+      if (v._reserve) return { headway: null, plan: null };
+      const peers = vehicles.filter((x) => !x._reserve && x.route_id === v.route_id && x._d === v._d);
+      if (peers.length < 2) return { headway: null, plan: null };
+      peers.sort((a, b) => a._pos - b._pos);
+      const i = peers.findIndex((x) => x.vehicle_id === v.vehicle_id);
+      const r = routeById[v.route_id]; const D = r && r.dirs[v._d];
+      const plan = D ? Math.round(D.length / (peers.length * PLAN_SPEED)) : null;
+      if (i <= 0) return { headway: null, plan };
+      return { headway: Math.round((v._pos - peers[i - 1]._pos) / PLAN_SPEED), plan };
+    };
     const pub = (v) => {
       const level = App.riskLevel(v.risk_score);
+      const { headway, plan } = headwayFor(v);
       const out = {
         vehicle_id: v.vehicle_id, route_id: v.route_id, direction_id: v._d, lat: v.lat, lon: v.lon, is_reserve: !!v._reserve,
         speed: Math.round(v.speed), heading: null,
         delay_now_sec: Math.round(v.delay_now_sec), delay_pred_sec: v.delay_pred_sec, risk_score: v.risk_score,
         updated_at: v.updated_at,
+        headway_prev_sec: headway, plan_headway_sec: plan,
       };
       // Стоит на красном — диспетчер видит, почему ТС не едет
       if (v._wait) {
@@ -472,7 +487,20 @@ window.App = window.App || {};
       },
       async getMetrics() {
         // Формат как у ML-сервиса (GET /metrics/model); MAE — реальный с labels_test (statistics/tables/model_metrics.csv)
-        return { mae_test_s: 43.7, latency_ms_p50: 18, model_version: "catboost-ensemble-v1 (mock)" };
+        // uncertainty.coverage_calibrated_holdout — оценка покрытия 80%-интервала на тестовом фолде.
+        return {
+          mae_test_s: 43.7, latency_ms_p50: 18,
+          model_version: "catboost-ensemble-v1 (mock)",
+          uncertainty: { coverage_target: 0.80, coverage_calibrated_holdout: 0.82 },
+          validation: {
+            // MAE по горизонту прогноза: где модель точнее «на подлёте», где — за 10 мин
+            mae_by_lead: [
+              { bin: "0-3м", mae_s: 28 }, { bin: "3-5м", mae_s: 34 },
+              { bin: "5-10м", mae_s: 44 }, { bin: "10-15м", mae_s: 58 },
+              { bin: "15м+", mae_s: 71 },
+            ],
+          },
+        };
       },
       async getWorstStops(limit = 10) {
         // Топ-10 по прогнозируемой задержке среди всех предстоящих остановок.
@@ -504,6 +532,44 @@ window.App = window.App || {};
           .filter((r) => r.avg_delay_sec >= 30)
           .sort((a, b) => b.avg_delay_sec - a.avg_delay_sec)
           .slice(0, limit);
+      },
+      // Bus bunching (Daganzo, 2009): пары ТС одного маршрута/направления
+      // с фактическим интервалом < 60% · планового — «слипаются паровозиком».
+      async getBunching() {
+        const groups = new Map();
+        for (const v of vehicles) {
+          if (v._reserve) continue;
+          const key = `${v.route_id}|${v._d ?? 0}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(v);
+        }
+        const out = [];
+        for (const [key, vs] of groups) {
+          if (vs.length < 2) continue;
+          const [route_id, dirStr] = key.split("|");
+          const direction_id = +dirStr;
+          const r = routeById[route_id]; if (!r) continue;
+          const D = r.dirs[direction_id]; if (!D) continue;
+          const planHeadway = D.length / (vs.length * PLAN_SPEED);
+          const threshold = Math.max(45, planHeadway * 0.6);
+          const sorted = [...vs].sort((a, b) => a._pos - b._pos);
+          for (let i = 0; i < sorted.length - 1; i++) {
+            const a = sorted[i], b = sorted[i + 1];
+            const headway = (b._pos - a._pos) / PLAN_SPEED;
+            if (headway < threshold) {
+              out.push({
+                route_id, direction_id,
+                leader_id: a.vehicle_id, follower_id: b.vehicle_id,
+                headway_sec: Math.round(headway),
+                plan_headway_sec: Math.round(planHeadway),
+                ratio: +(headway / Math.max(planHeadway, 1)).toFixed(2),
+                leader: { lat: a.lat, lon: a.lon },
+                follower: { lat: b.lat, lon: b.lon },
+              });
+            }
+          }
+        }
+        return out.sort((a, b) => a.ratio - b.ratio);
       },
       // What-if: как изменится прогноз у ТС маршрута, если применить меру
       async whatif({ scenario, route_id, at_stop_id }) {

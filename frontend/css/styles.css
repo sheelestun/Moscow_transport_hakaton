@@ -326,6 +326,7 @@ button { font: inherit; color: inherit; }
 .veh--yellow { background: var(--yellow); }
 .veh--red { background: var(--red); color: #fff; animation: pulse 1.5s infinite; }
 .veh.is-dim { opacity: .3; }
+.veh--bunch { box-shadow: 0 0 0 3px #4dc7ff, 0 0 12px rgba(77,199,255,.6); }
 
 /* Масштаб карты: средний — зелёные поменьше без номера; далёкий — зелёные точки, жёлтые меньше */
 .zoom-mid .veh--green:not(.is-selected) { width: 12px; height: 12px; border-width: 1.5px; }
@@ -613,5 +614,13 @@ button { font: inherit; color: inherit; }
 .heat-cell i { font-size: 11px; color: var(--muted); font-style: normal; margin-top: 1px; }
 .heat-cell--now { outline: 2px solid var(--accent); outline-offset: -1px; }
 .heat-cell--now b { color: #fff; }
+
+/* MAE по горизонту прогноза: горизонтальные полоски (простое сравнение бинов) */
+.lead-bars { display: flex; flex-direction: column; gap: 6px; margin: 6px 12px 8px; }
+.lead-bar { display: grid; grid-template-columns: 44px 1fr 48px; align-items: center; gap: 8px; font-size: 13px; }
+.lead-bar__lab { color: var(--muted); font-family: var(--mono); }
+.lead-bar__track { position: relative; height: 8px; background: rgba(255,255,255,.06); border-radius: 6px; overflow: hidden; }
+.lead-bar__track i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--green), var(--yellow), var(--red)); border-radius: 6px; }
+.lead-bar__val { font-family: var(--mono); text-align: right; color: #d8e2f2; }
 
 
