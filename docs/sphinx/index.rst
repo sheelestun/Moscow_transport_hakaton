@@ -16,6 +16,7 @@
    overview
    ml_module
    inference_api
+   backend_module
    modules
 
 Индексы и таблицы
