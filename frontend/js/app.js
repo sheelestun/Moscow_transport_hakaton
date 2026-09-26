@@ -197,6 +197,18 @@ window.App = window.App || {};
       state.lastUpdate = new Date(App.now());
       App.map.updateVehicles(list);
       renderKpis();
+      // Светофоры (фазы есть только в демо-симуляции): на всех видимых линиях,
+      // у выбранного автобуса — крупнее
+      if (source.getSignals) {
+        const sv = state.selectedId && state.vehicles.get(state.selectedId);
+        const list = [];
+        for (const r of state.routes.values()) {
+          if (!isVisible(r.route_id)) continue;
+          const sel = !!sv && sv.route_id === r.route_id;
+          source.getSignals(r.route_id).forEach((s) => list.push({ ...s, sel }));
+        }
+        App.map.updateSignals(list);
+      }
       renderVehicle();
     },
     onAlertNew(a) {
@@ -500,7 +512,9 @@ window.App = window.App || {};
   async function applyMeasure(scenario, routeId) {
     await source.applyMeasure({ scenario, route_id: routeId });
     state.applied.push({ scenario, route_id: routeId, at: App.now() });
-    toast(`Применено: ${App.labels.scenarios[scenario]} на маршруте ${routeId}. Опоздания начнут отыгрываться.`);
+    toast(scenario === "signal_priority"
+      ? `Приоритет на светофорах включён на маршруте ${routeId} на 20 минут: светофоры дают зелёный автобусам. Смотрите на карту.`
+      : `Применено: ${App.labels.scenarios[scenario]} на маршруте ${routeId}. Опоздания начнут отыгрываться.`);
     renderVehicle();
   }
 

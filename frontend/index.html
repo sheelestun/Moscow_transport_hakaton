@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/styles.css?v=2026092601" />
 </head>
 <body>
   <!-- ВЕРХНЯЯ ПАНЕЛЬ: главное за 5 секунд -->
@@ -91,6 +91,7 @@
         <div class="legend__row"><span class="dot dot--red"></span>опоздает больше чем на 3 мин</div>
         <div class="legend__row"><span class="dot dot--yellow"></span>риск опоздания</div>
         <div class="legend__row"><span class="dot dot--green"></span>по графику</div>
+        <div class="legend__row legend__signals"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>светофоры <span class="muted">(видны при приближении и у выбранного автобуса; фазы — симуляция)</span></div>
         <div class="legend__hint">Нажмите на автобус — подсветится его маршрут</div>
       </div>
     </section>
@@ -138,17 +139,19 @@
   <!-- Библиотека карты -->
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 
-  <!-- Наш код. Порядок важен: каждый файл использует предыдущие. -->
-  <script src="js/config.js"></script>
-  <script src="js/labels.js"></script>
-  <script src="js/geo.js"></script>
-  <script src="js/mock-routes.js"></script>
-  <script src="js/mock.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/basemap.js"></script>
-  <script src="js/map.js"></script>
-  <script src="js/sidebar.js"></script>
-  <script src="js/whatif.js"></script>
-  <script src="js/app.js"></script>
+  <!-- Наш код. Порядок важен: каждый файл использует предыдущие.
+       ?v=… — версия: меняйте её после правок, чтобы браузер не брал старые файлы из кэша. -->
+  <script src="js/config.js?v=2026092601"></script>
+  <script src="js/labels.js?v=2026092601"></script>
+  <script src="js/geo.js?v=2026092601"></script>
+  <script src="js/mock-routes.js?v=2026092601"></script>
+  <script src="js/mock-signals.js?v=2026092601"></script>
+  <script src="js/mock.js?v=2026092601"></script>
+  <script src="js/api.js?v=2026092601"></script>
+  <script src="js/basemap.js?v=2026092601"></script>
+  <script src="js/map.js?v=2026092601"></script>
+  <script src="js/sidebar.js?v=2026092601"></script>
+  <script src="js/whatif.js?v=2026092601"></script>
+  <script src="js/app.js?v=2026092601"></script>
 </body>
 </html>

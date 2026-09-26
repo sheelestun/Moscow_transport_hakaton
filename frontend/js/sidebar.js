@@ -105,6 +105,8 @@ window.App = window.App || {};
           <div class="hero__big">${App.fmtDelay(v.delay_pred_sec)}</div>
           ${whereName ? `<div class="hero__where">к остановке «${App.esc(whereName)}» · ${App.fmtTime(whereTime)} (${App.fmtIn(whereTime)})</div>` : ""}
           ${problemHtml(schedule, level)}
+          ${v.waiting_signal && v.waiting_signal.waited_sec >= 2 ? `<div class="waiting"><span class="sig-ico"><i class="r"></i><i class="g"></i></span>
+            <span>Сейчас стоит на красном светофоре <b>${v.waiting_signal.waited_sec} с</b> · зелёный через ${v.waiting_signal.left_sec} с</span></div>` : ""}
           <div class="hero__grid">
             <div><span class="muted">Сейчас</span><b class="t-${App.delayLevel(v.delay_now_sec)}">${App.fmtDelayShort(v.delay_now_sec)}</b></div>
             <div><span class="muted">Скорость</span><b>${v.speed ?? "—"} км/ч</b></div>
@@ -239,8 +241,20 @@ window.App = window.App || {};
     if (ack) ack.onclick = ctx.onAck;
   }
 
+  // Длинные маршруты (50+ остановок): по умолчанию показываем «окно» — 2 пройденные, следующие до цели прогноза и 2 после
+  let schedAll = false;
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "sched-toggle") { schedAll = !schedAll; e.target.textContent = "…"; }
+  });
+
   function scheduleHtml(sch) {
-    const rows = sch.stops.map((s) => {
+    const all = sch.stops;
+    const iNext = Math.max(0, all.findIndex((s) => s.status !== "passed"));
+    const iTarget = all.findIndex((s) => s.is_target);
+    const from = schedAll ? 0 : Math.max(0, iNext - 2);
+    const to = schedAll ? all.length - 1 : Math.min(all.length - 1, Math.max(iTarget, iNext) + 2);
+    const hiddenBefore = from, hiddenAfter = all.length - 1 - to;
+    const rows = all.slice(from, to + 1).map((s) => {
       const lvl = App.delayLevel(s.delay_sec);
       const real = s.status === "passed" ? s.time_fact : s.time_pred;
       const tag = s.is_target ? `<span class="st__tag">цель прогноза</span>` : s.status === "next" ? `<span class="st__tag st__tag--next">следующая</span>` : "";
@@ -253,10 +267,12 @@ window.App = window.App || {};
           <span class="st__dev dev--${s.status === "passed" ? "passed" : lvl}">${App.fmtDelayShort(s.delay_sec)}</span>
         </li>`;
     }).join("");
+    const more = (n, where) => n ? `<li class="st st--more"><span class="st__rail"></span><span class="muted">… ещё ${n} ${where}</span></li>` : "";
     return `
-      <h4>Расписание рейса</h4>
+      <h4>Расписание рейса · ${all.length} остановок</h4>
       <div class="sched__head"><span></span><span>Остановка</span><span>План</span><span>Факт/прогноз</span><span>Откл.</span></div>
-      <ol class="sched">${rows}</ol>
+      <ol class="sched">${more(hiddenBefore, "пройденных")}${rows}${more(hiddenAfter, "дальше по маршруту")}</ol>
+      ${all.length > 8 ? `<button class="link" id="sched-toggle">${schedAll ? "Свернуть расписание" : "Показать всё расписание"}</button>` : ""}
       <p class="muted small">Прогноз времени для следующих остановок — от ML-модели. Прошедшие — фактическое время по телеметрии.</p>`;
   }
 })(window.App);

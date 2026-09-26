@@ -263,6 +263,9 @@ button { font: inherit; color: inherit; }
 .dev--green { color: var(--green); }
 .dev--passed { color: var(--muted); font-weight: 500; }
 
+.st--more { padding: 4px 0; font-size: 13.5px; }
+#sched-toggle { font-size: 14.5px; margin: 4px 0 8px; }
+
 /* ====== Поверх карты ====== */
 .map-tools { position: absolute; top: 12px; left: 12px; z-index: 5; display: flex; gap: 8px; flex-wrap: wrap; }
 .speed {
@@ -475,6 +478,16 @@ button { font: inherit; color: inherit; }
 .hz-collapsed .horizon__summary { display: block; align-self: center; flex: 1; font-size: 14.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hz-collapsed .horizon__summary b { color: var(--text); }
 .hz-collapsed .horizon__summary b.t-red { color: var(--red); }
+
+/* ====== Светофоры ====== */
+.sig-ico { display: inline-flex; flex-direction: column; gap: 2px; padding: 2px 3px; background: #0b1019; border: 1.5px solid #7f8ca3; border-radius: 5px; flex-shrink: 0; }
+.sig-ico i { width: 6px; height: 6px; border-radius: 50%; }
+.sig-ico .r { background: var(--red); box-shadow: 0 0 5px var(--red); }
+.sig-ico .g { background: #2a3346; }
+.waiting { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(255,90,82,.08); border: 1px dashed rgba(255,90,82,.4); font-size: 14.5px; }
+.waiting b { font-family: var(--mono); }
+.pop__wait { color: #ffb4ae; font-weight: 600; }
+.legend__signals .muted { font-size: 12.5px; }
 
 /* ====== Обрыв связи ====== */
 .net-btn {

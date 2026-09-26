@@ -48,6 +48,32 @@ App.geo = (function () {
     return best;
   }
 
+  // Проекция по порядку движения: ищем ближайшую точку линии не раньше minPos.
+  // Нужна для маршрутов, которые проходят рядом с одним местом дважды (кольцо, петли у конечных):
+  // остановки проецируются по очереди, не «перепрыгивая» назад.
+  function projectAfter(line, cum, p, minPos) {
+    const kx = Math.cos(p[0] * toRad);
+    let first = null, best = null;
+    for (let i = 1; i < line.length; i++) {
+      if (cum[i] < minPos) continue;
+      const a = line[i - 1], b = line[i];
+      const ax = a[1] * kx, ay = a[0], bx = b[1] * kx, by = b[0], px = p[1] * kx, py = p[0];
+      const dx = bx - ax, dy = by - ay;
+      const L = dx * dx + dy * dy || 1e-18;
+      let t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L));
+      let pos = cum[i - 1] + (cum[i] - cum[i - 1]) * t;
+      if (pos < minPos) { pos = minPos; t = (minPos - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1); }
+      const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      const d = dist(p, q);
+      const cand = { pos_m: pos, point: q, off_m: d };
+      if (!best || d < best.off_m) best = cand;
+      if (!first && d < 45) first = cand;
+      if (first && d > first.off_m + 5 && cum[i - 1] > first.pos_m + 300) break; // нашли и ушли дальше
+      if (first && d < first.off_m) first = cand;
+    }
+    return first || best;
+  }
+
   // Участок линии между from_m и to_m (порядок не важен)
   function slice(line, cum, from_m, to_m) {
     const a = Math.min(from_m, to_m), b = Math.max(from_m, to_m);
@@ -57,5 +83,5 @@ App.geo = (function () {
     return out;
   }
 
-  return { dist, cumulative, pointAt, project, slice };
+  return { dist, cumulative, pointAt, project, projectAfter, slice };
 })();

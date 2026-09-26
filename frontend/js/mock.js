@@ -45,16 +45,43 @@ window.App = window.App || {};
   // Та же формула, что в контракте ML: risk = sigmoid((delay_pred - 120) / 60)
   const riskFromDelay = (d) => 1 / (1 + Math.exp(-(d - 120) / 60));
 
-  function buildRoute(raw) {
-    const line = raw.line;
+  // Одно направление маршрута: своя линия, свои остановки и светофоры (с позицией вдоль линии)
+  function buildDir(raw, dirRaw, dirIdx) {
+    const line = dirRaw.line;
     const cum = G.cumulative(line);
-    const stops = raw.stops
-      .map((s, i) => {
-        const p = G.project(line, cum, [s[1], s[2]]);
-        return { stop_id: `${raw.route_id}-${i + 1}`, name: s[0], lat: p.point[0], lon: p.point[1], pos_m: p.pos_m };
+    // остановки — по порядку движения (как в реальном маршруте), проецируем без «прыжков назад»
+    let prev = 0;
+    const stops = dirRaw.stops.map((s, i) => {
+      const p = G.projectAfter(line, cum, [s[1], s[2]], prev);
+      prev = p.pos_m;
+      return { stop_id: `${raw.route_id}-${dirIdx}-${i + 1}`, name: s[0], lat: p.point[0], lon: p.point[1], pos_m: p.pos_m };
+    });
+    // Светофоры: реальные координаты (OpenStreetMap), фазы — симуляция.
+    // Цикл 80–100 с, зелёный 45–60% цикла, у каждого перекрёстка свой сдвиг фазы.
+    const signals = ((App.MOCK_SIGNALS || {})[raw.route_id] || [])
+      .map(([lat, lon], i) => {
+        const p = G.project(line, cum, [lat, lon]);
+        const seed = Math.abs(Math.sin((lat * 1e4 + lon * 1e4) * 12.9898)) * 1000;
+        const cycle = 80 + (seed % 20);
+        return {
+          id: `${raw.route_id}-s${i + 1}`, lat, lon, pos_m: p.pos_m, off_m: p.off_m,
+          cycle, green: cycle * (0.6 + (seed % 12) / 100), offset: seed % cycle, // на магистралях зелёный длиннее
+        };
       })
+      .filter((sg) => sg.off_m < 30) // светофор стоит на этой стороне дороги
       .sort((a, b) => a.pos_m - b.pos_m);
-    return { route_id: raw.route_id, name: raw.name, transport_type: raw.transport_type, geometry: line, stops, _cum: cum, length_m: cum[cum.length - 1] };
+    const length = cum[cum.length - 1];
+    // средняя задержка на светофорах на метр пути (для «прогноза модели»): P(красный) × средний остаток красного
+    const avgWait = signals.reduce((s, sg) => { const red = sg.cycle - sg.green; return s + (red / sg.cycle) * (red / 2); }, 0);
+    const waitPerM = length ? avgWait / length : 0;
+    const name = `${stops[0].name} → ${stops[stops.length - 1].name}`;
+    return { line, cum, length, stops, signals, name, waitPerM };
+  }
+
+  function buildRoute(raw) {
+    const dirs = raw.dirs.map((d, i) => buildDir(raw, d, i));
+    if (raw.loop) dirs[0].name = `по кругу от «${dirs[0].stops[0].name}»`;
+    return { route_id: raw.route_id, name: raw.name, transport_type: raw.transport_type, loop: !!raw.loop, dirs };
   }
 
   App.createMockSource = function () {
@@ -71,15 +98,17 @@ window.App = window.App || {};
     let timer = null;
 
     // ---------- ТС и рейсы ----------
-    // Расстояние, пройденное от начала рейса (с учётом направления)
-    const along = (v, pos) => (v._dir > 0 ? pos : routeById[v.route_id].length_m - pos);
+    // Направление, по которому сейчас едет ТС (0 — «туда», 1 — «обратно»)
+    const dirOf = (v) => routeById[v.route_id].dirs[v._d];
+    // Расстояние от начала рейса: у каждого направления своя линия, позиция считается вдоль неё
+    const along = (v, pos) => pos;
     // Плановое время (мс), когда ТС должно быть в точке d (метры от начала рейса)
     const planAt = (v, d) => v._anchor + (d / PLAN_SPEED) * 1000;
 
     let tripSeq = 0;
     function newTrip(v, delaySec) {
       // прошлый рейс запоминаем — по нему сверяем прогнозы, если рейс уже закончился
-      if (v._facts) v._lastTrip = { id: v._tripId, facts: v._facts, anchor: v._anchor, dir: v._dir * -1 };
+      if (v._facts) v._lastTrip = { id: v._tripId, facts: v._facts, anchor: v._anchor, d: v._d };
       v._tripId = ++tripSeq;
       v._noise = rnd(-40, 40);
       v._facts = {};
@@ -101,12 +130,15 @@ window.App = window.App || {};
     }
 
     routes.forEach((r) => {
-      for (let i = 0; i < 4; i++) {
+      // сколько ТС на линии — по длине маршрута (примерно одно на 3 км трассы)
+      const total = r.dirs.reduce((s, d) => s + d.length, 0);
+      const n = Math.max(4, Math.min(9, Math.round(total / 3000)));
+      for (let i = 0; i < n; i++) {
         const v = {
           vehicle_id: String(Math.floor(rnd(120000, 139999))),
           route_id: r.route_id,
-          _pos: (r.length_m * (i + rnd(0.15, 0.7))) / 4,
-          _dir: i % 2 ? -1 : 1,
+          _d: i % r.dirs.length,
+          _pos: r.dirs[i % r.dirs.length].length * ((Math.floor(i / r.dirs.length) + rnd(0.1, 0.8)) / Math.ceil(n / r.dirs.length)),
           _trouble: 0,
           _reason: "accumulated_delay",
           _feats: makeFeatures("accumulated_delay"),
@@ -120,7 +152,7 @@ window.App = window.App || {};
       }
     });
     // Несколько ТС сразу «в проблеме», чтобы на демо было что показать с первой секунды
-    [vehicles[1], vehicles[9], vehicles[14], vehicles[21]].forEach((v, i) => {
+    [1, 9, 14, 21].map((i) => vehicles[i % vehicles.length]).forEach((v, i) => {
       newTrip(v, rnd(110, 170));
       startTrouble(v, i === 3 ? 0.7 : 1);
       v._trouble = rnd(300, 700);
@@ -132,9 +164,12 @@ window.App = window.App || {};
       const now = simNow;
       for (const v of vehicles) {
         const r = routeById[v.route_id];
+        const D = r.dirs[v._d];
         if (v._trouble > 0) {
           v._trouble -= dt;
           v.speed = clamp(v._troubleSpeed + rnd(-1.5, 1.5), 2, 14);
+          // «Резкое падение скорости перед перекрёстком»: в демо — дольше стоит на красном
+
         } else {
           if (v._reason !== "accumulated_delay") {
             // проблема закончилась, но опоздание ещё не отыграно
@@ -142,9 +177,10 @@ window.App = window.App || {};
             v._feats = makeFeatures(v._reason);
           }
           // частота новых проблем — в реальном времени, чтобы при любой скорости симуляции было что показать
-          if (Math.random() < (0.001 * Math.sqrt(speedFactor / 5) * dt) / speedFactor) startTrouble(v);
+          if (Math.random() < (0.001 * (24 / vehicles.length) * Math.sqrt(speedFactor / 5) * dt) / speedFactor) startTrouble(v);
           // Водитель догоняет график, если опаздывает, и придерживается, если идёт с опережением
           const target = v.delay_now_sec > 20 ? 22 : v.delay_now_sec < -20 ? 14 : 18;
+          if (v.speed < 8) v.speed = 12; // тронулся после светофора
           v.speed = clamp(v.speed + (target - v.speed) * 0.3 + rnd(-1, 1), 10, 28);
         }
         v._speedAvg += (v.speed - v._speedAvg) * 0.08 * dt; // сглаженная скорость
@@ -157,18 +193,41 @@ window.App = window.App || {};
 
         // Движение по линии маршрута (реальное время)
         const before = along(v, v._pos);
-        v._pos = clamp(v._pos + v._dir * (v.speed / 3.6) * dt, 0, r.length_m);
+        let move = (v.speed / 3.6) * dt;
+        // Светофор впереди горит красным — останавливаемся перед стоп-линией (за 8 м)
+        v._wait = null;
+        for (const sg of D.signals) {
+          const ds = along(v, sg.pos_m);
+          if (ds <= before - 1 || ds > before + move + 8) continue;
+          const st = signalState(r, sg);
+          if (st.state !== "red") continue;
+          move = Math.max(0, Math.min(move, ds - 8 - before));
+          v._wait = { sig: sg, left: st.left };
+          break;
+        }
+        // «Стоит на красном» — только когда реально остановился (а не подъезжает)
+        if (v._wait && move < 0.5) {
+          v._waitSince = v._waitSince || now;
+          v.speed = 0;
+        } else {
+          v._wait = null;
+          v._waitSince = null;
+        }
+        v._pos = clamp(v._pos + move, 0, D.length);
         // Фиксируем фактическое время прохождения остановок (включая конечную)
         const after = along(v, v._pos);
-        for (const s of r.stops) {
+        for (const s of D.stops) {
           const d = along(v, s.pos_m);
           if (d > before && d <= after + 0.5) v._facts[s.stop_id] = now;
         }
-        if (v._pos >= r.length_m || v._pos <= 0) {
-          v._dir *= -1;
-          newTrip(v, rnd(-30, 60)); // новый рейс в обратную сторону
+        if (v._pos >= D.length) {
+          // конечная: разворот, новый рейс в обратную сторону — по своей стороне дороги
+          v._d = (v._d + 1) % r.dirs.length; // у кольцевого одно направление — едет дальше по кругу
+          v._pos = 0;
+          newTrip(v, rnd(-30, 60));
         }
-        const [lat, lon] = G.pointAt(r.geometry, r._cum, v._pos);
+        const DN = r.dirs[v._d];
+        const [lat, lon] = G.pointAt(DN.line, DN.cum, v._pos);
         v.lat = lat;
         v.lon = lon;
 
@@ -194,6 +253,9 @@ window.App = window.App || {};
       if (tr > 0) d += (1 - (v._troubleSpeed / 3.6) / PLAN_SPEED) * tr; // во время проблемы копится
       const rest = t - tr;
       if (v._recover > 0) d -= Math.min(v._recover, 1.2 * t);        // применённая мера
+      // ожидаемые ожидания на светофорах впереди (если на маршруте не включён приоритет)
+      const r = routeById[v.route_id];
+      if (!(r._priorityUntil > simNow)) d += r.dirs[v._d].waitPerM * PLAN_SPEED * t;
       const catchUp = 1 - (22 / 3.6) / PLAN_SPEED;                     // < 0: догоняет график
       d = d > 0 ? Math.max(0, d + catchUp * rest) : Math.min(0, d - catchUp * rest);
       return d;
@@ -202,11 +264,18 @@ window.App = window.App || {};
     const pub = (v) => {
       const level = App.riskLevel(v.risk_score);
       const out = {
-        vehicle_id: v.vehicle_id, route_id: v.route_id, lat: v.lat, lon: v.lon, is_reserve: !!v._reserve,
+        vehicle_id: v.vehicle_id, route_id: v.route_id, direction_id: v._d, lat: v.lat, lon: v.lon, is_reserve: !!v._reserve,
         speed: Math.round(v.speed), heading: null,
         delay_now_sec: Math.round(v.delay_now_sec), delay_pred_sec: v.delay_pred_sec, risk_score: v.risk_score,
         updated_at: v.updated_at,
       };
+      // Стоит на красном — диспетчер видит, почему ТС не едет
+      if (v._wait) {
+        out.waiting_signal = {
+          signal_id: v._wait.sig.id, lat: v._wait.sig.lat, lon: v._wait.sig.lon,
+          waited_sec: Math.round((simNow - (v._waitSince || simNow)) / 1000), left_sec: v._wait.left,
+        };
+      }
       if (level !== "green") {
         const reason = v._reason || "accumulated_delay";
         Object.assign(out, {
@@ -224,7 +293,7 @@ window.App = window.App || {};
       const r = routeById[v.route_id];
       const now = simNow;
       const dCur = along(v, v._pos);
-      const ordered = v._dir > 0 ? r.stops : [...r.stops].reverse();
+      const ordered = r.dirs[v._d].stops;
       let nextFound = false;
       const rows = ordered.map((s) => {
         const d = along(v, s.pos_m);
@@ -284,6 +353,15 @@ window.App = window.App || {};
       };
     }
 
+    // Состояние светофора сейчас: "green" | "red" | "priority" (включён приоритет для ОТ на маршруте)
+    function signalState(route, sig) {
+      if (route._priorityUntil > simNow) return { state: "priority", left: Math.round((route._priorityUntil - simNow) / 1000) };
+      const t = (simNow / 1000 + sig.offset) % sig.cycle;
+      return t < sig.green
+        ? { state: "green", left: Math.round(sig.green - t) }
+        : { state: "red", left: Math.round(sig.cycle - t) };
+    }
+
     // Прогноз после меры (детерминированно, чтобы цифры не прыгали между расчётами)
     function afterMeasure(v, scenario) {
       const before = v.delay_pred_sec;
@@ -302,7 +380,7 @@ window.App = window.App || {};
       const r = routeById[route_id];
       const v = {
         vehicle_id: `Р${reserveSeq++}-${route_id}`, route_id, _reserve: true,
-        _pos: 0, _dir: 1, _trouble: 0, _reason: "accumulated_delay",
+        _pos: 0, _d: 0, _trouble: 0, _reason: "accumulated_delay",
         _feats: makeFeatures("accumulated_delay"), _conf: 0.8, speed: 22, _speedAvg: 20,
       };
       newTrip(v, -20);
@@ -370,8 +448,14 @@ window.App = window.App || {};
       name: "mock",
       async getRoutes() {
         return routes.map((r) => ({
-          route_id: r.route_id, name: r.name, transport_type: r.transport_type, geometry: r.geometry,
-          stops: r.stops.map(({ pos_m, ...s }) => s),
+          route_id: r.route_id, name: r.name, transport_type: r.transport_type,
+          geometry: r.dirs[0].line,                               // линия «туда» (для совместимости)
+          stops: r.dirs[0].stops.map(({ pos_m, ...s }) => s),
+          // оба направления: каждое по своей стороне дороги
+          directions: r.dirs.map((d, i) => ({
+            direction_id: i, name: d.name, geometry: d.line,
+            stops: d.stops.map(({ pos_m, ...s }) => s),
+          })),
         }));
       },
       async getVehicles() {
@@ -420,7 +504,20 @@ window.App = window.App || {};
           if (MEASURE_FITS[scenario].includes(v._reason)) v._trouble = 0; // причина устранена
         }
         if (scenario === "add_reserve") addReserve(route_id);
+        if (scenario === "signal_priority") routeById[route_id]._priorityUntil = simNow + 20 * 60000; // зелёная волна на 20 мин
         return { ok: true };
+      },
+      // Светофоры маршрута с текущей фазой (только у мока: фазы — симуляция)
+      getSignals(route_id) {
+        const r = routeById[route_id];
+        if (!r) return [];
+        const seen = new Set(), out = [];
+        for (const d of r.dirs) for (const sg of d.signals) {
+          if (seen.has(sg.id)) continue;
+          seen.add(sg.id);
+          out.push({ signal_id: sg.id, lat: sg.lat, lon: sg.lon, ...signalState(r, sg) });
+        }
+        return out;
       },
       // Скорость симуляции (только у мока)
       setSpeed(x) { speedFactor = x; },

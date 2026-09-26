@@ -40,6 +40,8 @@ window.App = window.App || {};
 
       popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 18, className: "veh-pop", maxWidth: "260px" });
 
+      map.on("error", (e) => console.error("Ошибка карты:", e && e.error ? e.error.message : e));
+
       map.on("click", (e) => {
         if (e.originalEvent.target.closest && e.originalEvent.target.closest(".veh")) return;
         handlers.onEmptyClick && handlers.onEmptyClick();
@@ -73,11 +75,7 @@ window.App = window.App || {};
       if (!ready) { pendingRoutes = routes; return; }
       map.getSource("routes").setData({
         type: "FeatureCollection",
-        features: routes.map((r) => ({
-          type: "Feature",
-          properties: { route_id: r.route_id, level: "green" },
-          geometry: { type: "LineString", coordinates: r.geometry.map(ll) },
-        })),
+        features: routeFeatures(routes, {}),
       });
       this._routes = routes;
       const b = new maplibregl.LngLatBounds();
@@ -92,11 +90,7 @@ window.App = window.App || {};
       if (!this._routes || !ready) return;
       map.getSource("routes").setData({
         type: "FeatureCollection",
-        features: this._routes.map((r) => ({
-          type: "Feature",
-          properties: { route_id: r.route_id, level: levels[r.route_id] || "green" },
-          geometry: { type: "LineString", coordinates: r.geometry.map(ll) },
-        })),
+        features: routeFeatures(this._routes, levels),
       });
     },
 
@@ -176,8 +170,11 @@ window.App = window.App || {};
 
     updateSelection(vehicle, route, schedule) {
       if (!ready || !route || !schedule || vehicle.vehicle_id !== selectedId) return;
-      const line = route.geometry;
-      const cum = route._cum || (route._cum = App.geo.cumulative(line));
+      // линия того направления, по которому едет ТС («туда» / «обратно» — по разным сторонам дороги)
+      const dir = route.directions && route.directions.find((d) => d.direction_id === (vehicle.direction_id ?? 0));
+      const line = dir ? dir.geometry : route.geometry;
+      const key = "_cum" + (dir ? dir.direction_id : "");
+      const cum = route[key] || (route[key] = App.geo.cumulative(line));
       const vPos = App.geo.project(line, cum, [vehicle.lat, vehicle.lon]).pos_m;
       const stops = schedule.stops.map((s) => ({ ...s, pos: App.geo.project(line, cum, [s.lat, s.lon]).pos_m }));
 
@@ -210,6 +207,19 @@ window.App = window.App || {};
       });
     },
 
+    // Светофоры выбранного маршрута (список с текущей фазой) — обновляется раз в секунду
+    updateSignals(list) {
+      if (!ready) return;
+      map.getSource("signals").setData({
+        type: "FeatureCollection",
+        features: (list || []).map((s) => ({
+          type: "Feature",
+          properties: { state: s.state, left: s.left, sel: !!s.sel },
+          geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        })),
+      });
+    },
+
     clearSelection() {
       selectedId = null;
       for (const m of markers.values()) m.el.classList.remove("is-selected", "is-dim");
@@ -229,10 +239,48 @@ window.App = window.App || {};
 
   const isShown = (routeId) => !visible || visible.has(routeId);
 
+  // Линии маршрутов: оба направления (если бэкенд их отдаёт), иначе одна линия
+  function routeFeatures(routes, levels) {
+    const out = [];
+    for (const r of routes) {
+      const lines = r.directions && r.directions.length ? r.directions.map((d) => d.geometry) : [r.geometry];
+      for (const g of lines) out.push({
+        type: "Feature",
+        properties: { route_id: r.route_id, level: levels[r.route_id] || "green" },
+        geometry: { type: "LineString", coordinates: g.map(ll) },
+      });
+    }
+    return out;
+  }
+
+  // Рисуем значок светофора на canvas (в 2 раза крупнее — для чёткости на экранах с высокой плотностью)
+  function signalIcon(state) {
+    const W = 28, H = 50, c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const g = c.getContext("2d");
+    const box = (x, y, w, h, r) => { g.beginPath(); g.roundRect(x, y, w, h, r); };
+    // корпус
+    box(3, 3, W - 6, H - 6, 8);
+    g.fillStyle = "#0b1019"; g.fill();
+    g.lineWidth = state === "priority" ? 4 : 2.5;
+    g.strokeStyle = state === "priority" ? "#ffffff" : "#7f8ca3"; g.stroke();
+    // лампы
+    const lamp = (cy, color, on) => {
+      g.beginPath(); g.arc(W / 2, cy, 7.5, 0, Math.PI * 2);
+      if (on) { g.shadowColor = color; g.shadowBlur = 10; g.fillStyle = color; }
+      else { g.shadowBlur = 0; g.fillStyle = "#2a3346"; }
+      g.fill(); g.shadowBlur = 0;
+    };
+    lamp(15, "#ff4d45", state === "red");
+    lamp(H - 15, "#2fe07f", state !== "red");
+    return g.getImageData(0, 0, W, H);
+  }
+
   function addOwnLayers() {
     map.addSource("routes", { type: "geojson", data: empty });
     map.addSource("sel-line", { type: "geojson", data: empty });
     map.addSource("sel-stops", { type: "geojson", data: empty });
+    map.addSource("signals", { type: "geojson", data: empty });
 
     // Все маршруты — серые линии поверх дорог
     map.addLayer({
@@ -261,6 +309,40 @@ window.App = window.App || {};
       filter: ["!=", ["get", "level"], "passed"],
       layout: { "line-cap": "round", "line-join": "round" },
       paint: { "line-color": byLevel(COLORS.grey), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+    });
+    // Светофоры: реальные места (OpenStreetMap), фазы — симуляция.
+    // Значок как у настоящего светофора: тёмный корпус, горит красная или зелёная лампа.
+    ["red", "green", "priority"].forEach((st) => map.addImage(`sig-${st}`, signalIcon(st), { pixelRatio: 2 }));
+    const sigIcon = ["concat", "sig-", ["get", "state"]];
+    map.addLayer({
+      id: "signals-all", type: "symbol", source: "signals", minzoom: 13,
+      filter: ["!=", ["get", "sel"], true],
+      layout: {
+        "icon-image": sigIcon, "icon-allow-overlap": true, "icon-ignore-placement": true,
+        "icon-size": ["interpolate", ["linear"], ["zoom"], 13, 0.6, 16, 0.9],
+      },
+      paint: { "icon-opacity": 0.85 },
+    });
+    map.addLayer({
+      id: "signals", type: "symbol", source: "signals",
+      filter: ["==", ["get", "sel"], true],
+      layout: {
+        "icon-image": sigIcon, "icon-allow-overlap": true, "icon-ignore-placement": true,
+        "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.95, 12, 1.1, 15, 1.4],
+        // сколько секунд до переключения — при приближении
+        "text-field": ["case", ["==", ["get", "state"], "priority"], "П", ["to-string", ["get", "left"]]],
+        "text-font": ["Noto Sans Bold"],
+        "text-size": 12,
+        "text-offset": [1.3, 0],
+        "text-anchor": "left",
+        "text-allow-overlap": true,
+        "text-optional": true,
+      },
+      paint: {
+        "text-color": ["match", ["get", "state"], "red", "#ffb4ae", "#9ff0c4"],
+        "text-halo-color": "#0b1019", "text-halo-width": 1.5,
+        "text-opacity": ["step", ["zoom"], 0, 13.5, 1],
+      },
     });
     // Остановки выделенного маршрута
     map.addLayer({
@@ -296,10 +378,11 @@ window.App = window.App || {};
     const v = m.data;
     const level = App.riskLevel(v.risk_score);
     const reason = v.reason_pattern ? `<div class="pop__reason">${App.esc(App.labels.t("reasons", v.reason_pattern))}</div>` : "";
+    const wait = v.waiting_signal ? `<div class="pop__wait">Стоит на красном · ${v.waiting_signal.waited_sec} с</div>` : "";
     popup.setLngLat(m.marker.getLngLat()).setHTML(
       `<div class="pop"><div class="pop__head"><span class="route-chip">${App.esc(v.route_id)}</span> ТС ${App.esc(v.vehicle_id)}</div>
        <div class="pop__row">сейчас <b>${App.fmtDelayShort(v.delay_now_sec)}</b> · через 10–15 мин <b class="t-${level}">${App.fmtDelayShort(v.delay_pred_sec)}</b></div>
-       ${reason}<div class="pop__hint">нажмите, чтобы открыть</div></div>`
+       ${wait}${reason}<div class="pop__hint">нажмите, чтобы открыть</div></div>`
     ).addTo(map);
     popup._vid = id;
   }
