@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from explain import REC_CODE, explain, reason_pattern, recommendation, risk_level  # noqa: E402
-from features.tabular import CAT_FEATURES, FEATURES, index_schedule, make_tele, point_features, to_sec  # noqa: E402
+from features.tabular import CAT_FEATURES, FEATURES, dist_m, index_schedule, make_tele, point_features, to_sec  # noqa: E402
 
 ARTIFACTS_DIR = Path(os.environ.get("ML_ARTIFACTS", Path(__file__).resolve().parents[1] / "artifacts"))
 STATS_DIR = Path(os.environ.get("ML_STATS_DIR", Path(__file__).resolve().parents[2] / "statistics" / "tables"))
@@ -49,6 +49,9 @@ MODEL_VERSION_ENV = os.environ.get("ML_MODEL_VERSION")
 RISK_MID_SEC = float(os.environ.get("ML_RISK_MID_SEC", 120.0))
 RISK_SLOPE_SEC = float(os.environ.get("ML_RISK_SLOPE_SEC", 60.0))
 STALE_AFTER_S = 180  # нет свежих координат дольше — данные «устарели», уверенность снижаем
+OFF_ROUTE_M = 3000   # ТС дальше от всех своих остановок (план ±1 ч) — позиция «не на маршруте» (~4% реальных точек:
+                     # стоянка в парке перед рейсом; у случайных координат эмулятора — почти всегда)
+HORIZON_S = (600, 900)  # прогноз по условию: первая остановка с планом в (T+10 мин, T+15 мин]
 MAE_TARGET = 78.0    # оценка по условию «бейзлайн даёт score 0.40» (см. train_catboost.mae_target_estimate)
 
 # What-if — эвристические сдвиги задержки (секунды), не выученные моделью; для дашборда это «оценка сценария».
@@ -131,7 +134,9 @@ class PredictResponse(BaseModel):
     risk_level: str = "green"
     causes: list[Cause] = Field(default_factory=list)
     recommendation_text: str = ""
-    data_status: str = Field("live", description="live / stale / no_telemetry / fallback")
+    data_status: str = Field("live", description="live / stale / off_route / no_telemetry / fallback")
+    horizon_ok: Optional[bool] = Field(None, description="целевая остановка в окне (T+10, T+15] мин — критерий горизонта")
+    off_route_m: Optional[float] = Field(None, description="расстояние от ТС до ближайшей своей остановки (план ±1 ч), м")
     latency_ms: float = 0.0
 
 
@@ -308,7 +313,7 @@ def _naive(ts) -> pd.Timestamp:
     return t.tz_localize(None) if t.tzinfo is not None else t
 
 
-def _features(req: PredictRequest) -> pd.DataFrame:
+def _features(req: PredictRequest) -> tuple[pd.DataFrame, Optional[float]]:
     """Признаки точки той же ``point_features``, что в батче (``tabular.build_features``).
 
     Быстрый путь: план ТС разобран один раз при старте (``STATE.stops_by_tr``), телеметрия собирается прямо
@@ -348,7 +353,19 @@ def _features(req: PredictRequest) -> pd.DataFrame:
     for c in FEATURES:
         if c not in X:
             X[c] = np.nan
-    return X[FEATURES]
+    return X[FEATURES], _off_route_m(tele, sg, t_sec)
+
+
+def _off_route_m(tele, sg, t_sec: int) -> Optional[float]:
+    """Расстояние от последней валидной координаты до ближайшей остановки ТС с планом в [T−1 ч, T+1 ч]."""
+    if tele is None:
+        return None
+    ok = np.where(~np.isnan(tele.lat))[0]
+    near = (sg.plan >= t_sec - 3600) & (sg.plan <= t_sec + 3600)
+    if not len(ok) or not near.any():
+        return None
+    j = ok[-1]
+    return float(dist_m(sg.lon[near], sg.lat[near], tele.lon[j], tele.lat[j]).min())
 
 
 def _num(x) -> Optional[float]:
@@ -359,7 +376,9 @@ def _num(x) -> Optional[float]:
 
 def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
     t0 = time.perf_counter()
-    X = pd.concat([_features(r) for r in reqs])
+    built = [_features(r) for r in reqs]
+    X = pd.concat([b[0] for b in built])
+    off_route = [b[1] for b in built]
     feats = STATE.meta["features"]
     cats = [c for c in CAT_FEATURES if c in feats]
     pool = Pool(X[feats], cat_features=cats)
@@ -390,10 +409,17 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
     for i, req in enumerate(reqs):
         f = X.iloc[i].to_dict()
         age = _num(f.get("last_fix_age_s"))
-        status = "no_telemetry" if age is None else ("stale" if age > STALE_AFTER_S else "live")
+        off = off_route[i]
+        status = ("no_telemetry" if age is None else "stale" if age > STALE_AFTER_S
+                  else "off_route" if off is not None and off > OFF_ROUTE_M else "live")
         conf = float(np.clip(1 - (hi[i] - lo[i]) / 600, 0.05, 0.99)) * (1.0 if status == "live" else 0.5)
         d, pe, pl = float(delay[i]), float(proba[i, 0]), float(proba[i, 2])
         ex = explain(shap[i], feats, f, d)
+        if status == "off_route":
+            ex["causes"].insert(0, {"code": "off_route", "contribution_sec": 0.0,
+                                 "text": f"ТС в {off / 1000:.1f} км от своих остановок: прогноз опирается на расписание "
+                                         f"и последнее отклонение, позицию стоит проверить"})
+        lead_s = (_naive(req.target_time_begin) - _naive(req.T)).total_seconds()
         level = risk_level(d, pe, pl)
         reason = reason_pattern(level, d, ex["causes"], f)
         total = sum(abs(t["contribution"]) for t in ex["top_features"]) or 1.0
@@ -408,7 +434,8 @@ def _predict(reqs: list[PredictRequest]) -> list[PredictResponse]:
             delay_interval_sec=[round(float(lo[i]), 1), round(float(hi[i]), 1)],
             p_early=round(pe, 3), p_ontime=round(float(proba[i, 1]), 3), p_late=round(pl, 3), risk_level=level,
             causes=[Cause(**c) for c in ex["causes"]], recommendation_text=recommendation(level, d, ex["causes"]),
-            data_status=status, latency_ms=round(elapsed, 2)))
+            data_status=status, horizon_ok=bool(HORIZON_S[0] < lead_s <= HORIZON_S[1]),
+            off_route_m=None if off is None else round(off, 0), latency_ms=round(elapsed, 2)))
     with STATE.lock:
         STATE.latencies.extend([elapsed] * len(reqs))
         STATE.n_requests += len(reqs)

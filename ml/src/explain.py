@@ -40,7 +40,10 @@ def _v(f: dict, k: str, default=np.nan) -> float:
 def cause_text(group: str, f: dict) -> str:
     """Человеческая формулировка причины по значениям признаков."""
     if group == "accumulated":
-        return f"накопленное отклонение: {_v(f, 'cur_dev_s'):+.0f} с на последней пройденной остановке"
+        cur, gps = _v(f, "cur_dev_s", 0.0), _v(f, "gps_med3")
+        if abs(cur) < 1 and not np.isnan(gps):  # подсказка пустая — вклад дала GPS-история прибытий
+            return f"отклонение по GPS на последних пройденных остановках: {gps:+.0f} с"
+        return f"накопленное отклонение: {cur:+.0f} с на последней пройденной остановке"
     if group == "trend":
         return f"отклонение меняется на {_v(f, 'gps_slope'):+.0f} с за минуту"
     if group == "dwell":
